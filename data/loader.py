@@ -2,13 +2,15 @@
 import pandas as pd
 from .intervals import interval_to_ms
 from .schemas import validate_ohlcv_schema
+from .validator import OHLCVValidator
 
 class MarketDataLoader:
-
-    def __init__(self, source, storage, limit=1000):
+    def __init__(self, source, storage, limit=1000, strict_validation=False):
         self.source = source
         self.storage = storage
+        self.interval_min = interval_min
         self.limit = limit
+        self.validator = OHLCVValidator(interval_min, strict=strict_validation)
 
     def load_range(self, symbol, interval_min, start_ts, end_ts) -> pd.DataFrame:
         cached = self.storage.load(symbol, interval_min, start_ts, end_ts)
@@ -48,4 +50,5 @@ class MarketDataLoader:
             self.storage.save(symbol, interval_min, fetched)
             cached = pd.concat([cached, fetched]).drop_duplicates("timestamp")
 
-        return validate_ohlcv_schema(cached)
+        report = self.validator.validate(df)
+        return df, report
