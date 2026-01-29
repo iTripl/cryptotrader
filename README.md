@@ -1,123 +1,41 @@
-# Roadmap: Trading Bot
+# CryptoTrader Infrastructure (Scaffold)
 
-## Цель проекта
-Создать проект, который можно показать на собеседовании для позиции **Python/BACKEND разработчик**.
+Production-grade, modular architecture for a crypto trading system with
+clean separation between strategy, risk, execution, and data layers.
 
----
+## Quick start (debug/dev)
+- Edit `config/config.ini`
+- Create venv: `bash scripts/setup_venv.sh`
+- Run: `python main.py --config config/config.ini --interactive`
+- Debug with synthetic stream: `python main.py --config config/config.ini --dry-run`
+- Run tests: `pytest`
+ - Preflight checks: `python scripts/preflight.py --config config/config.ini`
 
-## Структура проекта
+## Modes
+- `backtest`  : uses historical Parquet data and simulated execution
+- `forward`   : uses live data, paper execution
+- `live`      : uses live data + exchange execution
 
-```
-trading-bot/  
-src/  
-core/  
-data/  
-strategy/  
-backtest/  
-execution/  
-tests/  
-README.md  
-pyproject.toml
-```
+Backtest auto-downloads missing data for the configured symbols/timeframes.
 
+Backtest summaries (stats + final equity) are stored in `State/trading.db`.
+ML recommendations (TP/SL + confidence) are stored in `State/trading.db` table `ml_recommendations`.
+Latest recommendations are also written to `State/ml_recommendations.json`.
 
----
+## Design highlights
+- One strategy per OS process
+- Each strategy auto-loads data by default
+- Unified exchange interface (REST + WS)
+- Strict signal contract with traceability
+- Parquet data pipeline with validation
+- Structured JSON logging
 
-## Этап 0. Фундамент (Setup)
-**Навыки**
-- Python 3.11+, stdlib  
-- typing, классы, исключения  
-- Git
+## Notes
+- This is infrastructure scaffolding; production strategy logic is not included.
+- Two basic test strategies are included (MA cross + RSI mean reversion).
+- Configuration is required for all runtime parameters; nothing is hardcoded.
 
-**Инструменты**
-- venv/poetry
-- IDE: VS Code/ PyCharm
-
-**Результат**
-- Репозиторий с базовой структурой
-
----
-
-## Этап 1. Market Data Module
-**Что**
-- Загрузка OHLCV из API
-- Кэширование по годам
-- Загружаемые данные → pandas DataFrame
-
-**Навыки**
-- HTTP
-- I/O файловые форматы
-- обработка ошибок
-
-**Проверка**
-- Повторная загрузка из кеша
-- Валидация данных
-
----
-
-## Этап 2. Strategy Engine
-**Что**
-- Генерация сигналов BUY/SELL
-- Изолированная логика
-- Не работает с балансом
-
-**Навыки**
-- Чистые функции
-- Абстракции
-
----
-
-## Этап 3. Backtesting Engine
-**Что**
-- Виртуальный баланс
-- Комиссии
-- Журнал сделок (PnL, drawdown)
-
-**Навыки**
-- State management
-
----
-
-## Этап 4. Reporting
-**Что**
-- Total PnL
-- Win rate
-- Equity curve
-
-**Инструменты**
-- pandas
-- matplotlib/plotly
-
----
-
-## Этап 5. Paper Trading Layer
-**Что**
-- Реальное время эмуляции
-- API ошибки
-- Задержки
-
----
-
-## Этап 6. Архитектура
-**Что**
-- Чёткие границы модулей
-- Dependency inversion
-- Без глобального состояния
-
----
-
-## Этап 7. Тестирование
-**Что**
-- Unit + интеграционные
-- mocks
-
-**Инструменты**
-- pytest
-
----
-
-## Этап 8. Документация
-**Что**
-- README
-- Примеры запуска
-- API описание
+## Deployment
+- Guide: `docs/deployment.md`
+- Debugging: `docs/debugging.md`
+- Research notes: `docs/research.md`

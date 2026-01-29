@@ -1,4 +1,6 @@
 pandas
-requests
 pyarrow
-pyarrow.parquet
+requests
+rich
+websockets
+pytest
