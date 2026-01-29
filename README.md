@@ -1,4 +1,4 @@
-# CryptoTrader Infrastructure (Scaffold)
+# CryptoTrader Infrastructure
 
 Production-grade, modular architecture for a crypto trading system with
 clean separation between strategy, risk, execution, and data layers.
@@ -9,7 +9,7 @@ clean separation between strategy, risk, execution, and data layers.
 - Run: `python main.py --config config/config.ini --interactive`
 - Debug with synthetic stream: `python main.py --config config/config.ini --dry-run`
 - Run tests: `pytest`
- - Preflight checks: `python scripts/preflight.py --config config/config.ini`
+- Preflight checks: `python scripts/preflight.py --config config/config.ini`
 
 ## Modes
 - `backtest`  : uses historical Parquet data and simulated execution
@@ -17,23 +17,41 @@ clean separation between strategy, risk, execution, and data layers.
 - `live`      : uses live data + exchange execution
 
 Backtest auto-downloads missing data for the configured symbols/timeframes.
-
 Backtest summaries (stats + final equity) are stored in `State/trading.db`.
 ML recommendations (TP/SL + confidence) are stored in `State/trading.db` table `ml_recommendations`.
 Latest recommendations are also written to `State/ml_recommendations.json`.
 
+## How It Works
+1) **Config load**: `config.ini` is parsed and validated (no hardcoded params).
+2) **Data source**:
+   - Backtest: loads Parquet, auto-downloads missing data, filters by `days_back`.
+   - Forward/Live: consumes exchange WS stream (Bybit implemented).
+3) **Candle loop**: all modes use the same candle loop and strategy execution path.
+4) **Strategies**: each strategy runs in its own OS process (backtest can use `fast_local` to run in-process).
+5) **Signals → Risk → Execution**:
+   - Strategy emits immutable `Signal`.
+   - Risk checks position/exposure/expectancy and sizes orders.
+   - Execution engine routes orders (paper/live/backtest).
+6) **Accounting**: positions, trades, PnL, and equity are updated for all modes.
+7) **Outputs**: structured logs + backtest summaries + ML recommendations.
+
 ## Design highlights
-- One strategy per OS process
-- Each strategy auto-loads data by default
+- One strategy per OS process (optional single-process for fast backtests)
 - Unified exchange interface (REST + WS)
 - Strict signal contract with traceability
-- Parquet data pipeline with validation
-- Structured JSON logging
+- Parquet data pipeline with validation and resume
+- Structured JSON logging and run summaries
+
+## Included strategies
+- `simple_ma` (moving average cross)
+- `rsi_reversion` (RSI mean reversion)
+- `donchian_trend` (Donchian ensemble trend)
+- `cross_section_momentum` (cross-sectional momentum)
 
 ## Notes
-- This is infrastructure scaffolding; production strategy logic is not included.
-- Two basic test strategies are included (MA cross + RSI mean reversion).
+- This is infrastructure scaffolding; production strategies and live WS connectors for Binance/OKX are not included yet.
 - Configuration is required for all runtime parameters; nothing is hardcoded.
+- Use the console menu to select strategies by number.
 
 ## Deployment
 - Guide: `docs/deployment.md`
