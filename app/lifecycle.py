@@ -45,9 +45,11 @@ class TradingApplication:
             consecutive_losses=0,
         )
         logger.info("starting trading application")
-        use_local = self.config.runtime.mode == "backtest"
+        use_local = self.config.runtime.mode == "backtest" and self.config.backtest.fast_local
         if not use_local:
-            self.strategy_manager.start(self.config)
+            self.strategy_manager.start()
+        else:
+            logger.info("backtest fast_local enabled (single-process strategies)")
         heartbeat = 0
         total_signals = 0
         self._order_count = 0
@@ -55,51 +57,32 @@ class TradingApplication:
         candle_count = 0
 
         try:
-            if self.config.runtime.mode != "backtest" and self.strategy_manager.auto_load_enabled():
-                while True:
-                    if self.killswitch.triggered:
-                        logger.error("killswitch triggered: %s", self.killswitch.reason)
-                        break
-                    signals = self.strategy_manager.collect_signals()
-                    for signal in signals:
-                        self._handle_signal(signal, portfolio)
-                        total_signals += 1
-                    heartbeat += 1
-                    if heartbeat % 50 == 0:
-                        self.strategy_manager.restart_failed(self.config)
-                    if self.strategy_manager.all_completed():
-                        logger.info("all strategy data streams completed")
-                        break
-                    time.sleep(0.05)
-            else:
-                for candle in self.mode_runner.stream():
-                    if self.killswitch.triggered:
-                        logger.error("killswitch triggered: %s", self.killswitch.reason)
-                        break
-                    if self.config.runtime.mode == "backtest":
-                        self._apply_backtest_stops(candle, portfolio)
-                    _ = self.feature_pipeline.transform(candle)
-                    last_prices[candle.symbol] = candle.close
-                    candle_count += 1
-                    if use_local:
-                        signals = self.strategy_manager.local_signals(candle)
-                    else:
-                        self.strategy_manager.broadcast_candle(candle)
-                        signals = self.strategy_manager.collect_signals()
-                    for signal in signals:
-                        self._handle_signal(signal, portfolio)
-                        total_signals += 1
-                    heartbeat += 1
-                    if candle_count % 500 == 0:
-                        logger.info(
-                            "backtest progress candles=%d signals=%d open_positions=%d",
-                            candle_count,
-                            total_signals,
-                            len(portfolio.open_positions),
-                        )
-                    if heartbeat % 50 == 0:
-                        if not use_local:
-                            self.strategy_manager.restart_failed(self.config)
+            for candle in self.mode_runner.stream():
+                if self.killswitch.triggered:
+                    logger.error("killswitch triggered: %s", self.killswitch.reason)
+                    break
+                if self.config.runtime.mode == "backtest":
+                    self._apply_backtest_stops(candle, portfolio)
+                _ = self.feature_pipeline.transform(candle)
+                last_prices[candle.symbol] = candle.close
+                candle_count += 1
+                if use_local:
+                    signals = self.strategy_manager.local_signals(candle)
+                else:
+                    signals = self.strategy_manager.on_candle(candle)
+                for signal in signals:
+                    self._handle_signal(signal, portfolio)
+                    total_signals += 1
+                heartbeat += 1
+                if candle_count % 500 == 0:
+                    logger.info(
+                        "backtest progress candles=%d signals=%d open_positions=%d",
+                        candle_count,
+                        total_signals,
+                        len(portfolio.open_positions),
+                    )
+                if heartbeat % 50 == 0 and not use_local:
+                    self.strategy_manager.restart_failed()
         finally:
             if not use_local:
                 self.strategy_manager.stop()
@@ -185,10 +168,9 @@ class TradingApplication:
         )
         self.state_repo.save_order(order)
 
-        if self.config.runtime.mode == "backtest":
-            self._apply_backtest_accounting(signal, execution_size, portfolio, order.order_id)
+        self._apply_accounting(signal, execution_size, portfolio, order.order_id)
 
-    def _apply_backtest_accounting(
+    def _apply_accounting(
         self,
         signal: Signal,
         size: float,
@@ -220,8 +202,7 @@ class TradingApplication:
 
         entry_price = position.entry_price
         close_price = price
-        slip = self.config.backtest.slippage_bps / 10000.0
-        fee = self.config.backtest.fee_bps / 10000.0
+        slip, fee = self._execution_costs()
 
         if position.side == "LONG":
             exec_entry = entry_price * (1 + slip)
@@ -255,6 +236,13 @@ class TradingApplication:
             portfolio.consecutive_losses += 1
         else:
             portfolio.consecutive_losses = 0
+
+    def _execution_costs(self) -> tuple[float, float]:
+        if self.config.runtime.mode == "live":
+            return 0.0, 0.0
+        slip = self.config.backtest.slippage_bps / 10000.0
+        fee = self.config.backtest.fee_bps / 10000.0
+        return slip, fee
 
     @staticmethod
     def _print_backtest_report(report, final_equity: float, simulated_days: int) -> None:

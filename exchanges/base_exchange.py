@@ -4,9 +4,10 @@ import random
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from data.loaders.base_loader import LoaderCheckpoint
+from data.schemas import Candle
 from monitoring.health import CircuitBreaker
 from utils.retry import RetryPolicy
 
@@ -69,6 +70,9 @@ class WsClient:
     def subscribe(self, channel: str) -> None:
         raise NotImplementedError
 
+    def stream_ohlcv(self, symbols: list[str], timeframes: list[str]) -> Iterable[Candle]:
+        raise NotImplementedError
+
 
 class ExchangeAdapter:
     name: str
@@ -81,3 +85,6 @@ class ExchangeAdapter:
 
     def checkpoint(self, name: str) -> LoaderCheckpoint:
         return LoaderCheckpoint(self._checkpoint_dir / f"{name}.json")
+
+    def stream_ohlcv(self, symbols: list[str], timeframes: list[str]) -> Iterable[Candle]:
+        return self.ws.stream_ohlcv(symbols, timeframes)

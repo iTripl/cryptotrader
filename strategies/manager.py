@@ -5,7 +5,6 @@ import time
 from queue import Empty
 from typing import Iterable
 
-from config.config_schema import AppConfig
 from data.schemas import Candle
 from signals.signal import Signal
 from strategies.base_strategy import Strategy, StrategyProcess, strategy_worker
@@ -20,23 +19,17 @@ class StrategyManager:
         self._strategies = list(strategies)
         self._strategy_by_name = {strategy.name: strategy for strategy in self._strategies}
         self._processes: list[StrategyProcess] = []
-        self._completed: set[str] = set()
-        self._auto_load_enabled = any(s.auto_load_data for s in self._strategies)
 
-    def start(self, config: AppConfig | None = None, force_auto_load: bool | None = None) -> None:
-        self._auto_load_enabled = False
+    def start(self) -> None:
         for strategy in self._strategies:
-            auto_load = strategy.auto_load_data if force_auto_load is None else force_auto_load
-            self._processes.append(self._spawn(strategy, config, auto_load))
-            if auto_load:
-                self._auto_load_enabled = True
+            self._processes.append(self._spawn(strategy))
 
-    def _spawn(self, strategy: Strategy, config: AppConfig | None, auto_load: bool) -> StrategyProcess:
+    def _spawn(self, strategy: Strategy) -> StrategyProcess:
         input_queue: mp.Queue[Candle] = mp.Queue()
         output_queue: mp.Queue = mp.Queue()
         process = mp.Process(
             target=strategy_worker,
-            args=(strategy, input_queue, output_queue, config, auto_load),
+            args=(strategy, input_queue, output_queue),
             name=f"strategy-{strategy.name}",
             daemon=True,
         )
@@ -47,7 +40,6 @@ class StrategyManager:
             process=process,
             input_queue=input_queue,
             output_queue=output_queue,
-            auto_load=auto_load,
         )
 
     def stop(self) -> None:
@@ -85,37 +77,31 @@ class StrategyManager:
     def healthcheck(self) -> dict[str, bool]:
         return {proc.name: proc.process.is_alive() for proc in self._processes}
 
-    def restart_failed(self, config: AppConfig | None = None) -> None:
-        failed = [
-            proc
-            for proc in self._processes
-            if not proc.process.is_alive() and proc.name not in self._completed
-        ]
+    def restart_failed(self) -> None:
+        failed = [proc for proc in self._processes if not proc.process.is_alive()]
         if not failed:
             return
-        restart: list[StrategyProcess] = []
+        logger.warning("restarting failed strategies: %s", [p.name for p in failed])
         for proc in failed:
-            if proc.process.exitcode == 0 and proc.auto_load:
-                self._completed.add(proc.name)
-                continue
-            restart.append(proc)
-        if restart:
-            logger.warning("restarting failed strategies: %s", [p.name for p in restart])
-            for proc in restart:
-                if proc in self._processes:
-                    self._processes.remove(proc)
-                proc.process.terminate()
-            time.sleep(0.5)
-            for proc in restart:
-                strategy = self._strategy_by_name.get(proc.name)
-                if strategy:
-                    self._processes.append(self._spawn(strategy, config))
+            if proc in self._processes:
+                self._processes.remove(proc)
+            proc.process.terminate()
+        time.sleep(0.5)
+        for proc in failed:
+            strategy = self._strategy_by_name.get(proc.name)
+            if strategy:
+                self._processes.append(self._spawn(strategy))
 
-    def auto_load_enabled(self) -> bool:
-        return self._auto_load_enabled
-
-    def all_completed(self) -> bool:
-        auto_load_names = {proc.name for proc in self._processes if proc.auto_load}
-        if not auto_load_names:
-            return False
-        return auto_load_names.issubset(self._completed)
+    def on_candle(self, candle: Candle, timeout_seconds: float = 0.05) -> list[Signal]:
+        self.broadcast_candle(candle)
+        signals: list[Signal] = []
+        deadline = time.time() + timeout_seconds
+        while time.time() < deadline:
+            batch = self.collect_signals()
+            if batch:
+                signals.extend(batch)
+            else:
+                time.sleep(0.001)
+        if signals:
+            logger.info("strategies produced %d signals", len(signals))
+        return signals

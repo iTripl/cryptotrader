@@ -58,6 +58,9 @@ class BinanceWsClient(WsClient):
     def subscribe(self, channel: str) -> None:
         raise NotImplementedError("Implement Binance WS subscribe")
 
+    def stream_ohlcv(self, symbols: list[str], timeframes: list[str]):
+        raise NotImplementedError("Implement Binance WS stream")
+
 
 class BinanceAdapter(ExchangeAdapter):
     name = "binance"

@@ -91,6 +91,8 @@ class BacktestConfig:
     start_ts: int
     end_ts: int
     days_back: int
+    fast_local: bool
+    max_candles_per_series: int
     fee_bps: float
     slippage_bps: float
     latency_ms: int
@@ -153,6 +155,8 @@ class AppConfig:
             raise ValueError("backtest.loader_timeout_seconds must be > 0")
         if self.backtest.max_empty_batches <= 0:
             raise ValueError("backtest.max_empty_batches must be > 0")
+        if self.backtest.max_candles_per_series < 0:
+            raise ValueError("backtest.max_candles_per_series must be >= 0")
         if self.ml.min_trades < 0:
             raise ValueError("ml.min_trades must be >= 0")
         if not (0 <= self.ml.target_win_rate <= 1):
@@ -256,6 +260,8 @@ def parse_backtest(section: dict[str, str]) -> BacktestConfig:
         start_ts=int(section.get("start_ts", "0")),
         end_ts=int(section.get("end_ts", "0")),
         days_back=int(section.get("days_back", "0")),
+        fast_local=_as_bool(section.get("fast_local", "false")),
+        max_candles_per_series=int(section.get("max_candles_per_series", "0")),
         fee_bps=float(section.get("fee_bps", "0")),
         slippage_bps=float(section.get("slippage_bps", "0")),
         latency_ms=int(section.get("latency_ms", "0")),

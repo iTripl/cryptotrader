@@ -13,9 +13,7 @@ from exchanges.okx.adapter import OkxAdapter, OkxRestClient, OkxWsClient
 from execution.execution_engine import BacktestExecutionEngine, LiveExecutionEngine, PaperExecutionEngine
 from execution.order_manager import OrderManager
 from features.feature_pipeline import FeaturePipeline
-from monitoring.metrics import MetricsCollector
 from risk.risk_manager import DefaultRiskManager
-from signals.signal_bus import MultiprocessingSignalBus
 from state.repository import InMemoryStateRepository
 from state.sqlite_repository import SqliteStateRepository
 from strategies.registry import load_strategies
@@ -41,7 +39,7 @@ class Container:
                 timeout=self.config.exchange.timeout_seconds,
                 category=self.config.exchange.category,
             )
-            ws = BybitWsClient()
+            ws = BybitWsClient(self.config.exchange.ws_url, self.config.runtime.exchange)
             return BybitAdapter(rest, ws, checkpoint_dir)
         if self.config.runtime.exchange == "binance":
             rest = BinanceRestClient(
@@ -108,8 +106,3 @@ class Container:
     def data_auto_loader(self):
         return DataAutoLoader(self.config, self.exchange_adapter(), self.parquet_writer())
 
-    def signal_bus(self):
-        return MultiprocessingSignalBus()
-
-    def metrics(self):
-        return MetricsCollector()

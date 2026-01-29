@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
+
+import asyncio
+import json
+import queue
+import threading
 
 import requests
 
+from data.schemas import Candle
 from exchanges.base_exchange import ExchangeAdapter, RateLimiter, RestClient, WsClient
 from utils.time import timeframe_to_seconds
 from utils.retry import RetryPolicy
@@ -69,11 +75,67 @@ class BybitRestClient(RestClient):
 
 
 class BybitWsClient(WsClient):
+    def __init__(self, ws_url: str, exchange_name: str) -> None:
+        self.ws_url = ws_url
+        self.exchange_name = exchange_name
+
     def connect(self) -> None:
-        raise NotImplementedError("Implement Bybit WS connect")
+        raise NotImplementedError("Direct connect not supported; use stream_ohlcv")
 
     def subscribe(self, channel: str) -> None:
-        raise NotImplementedError("Implement Bybit WS subscribe")
+        raise NotImplementedError("Direct subscribe not supported; use stream_ohlcv")
+
+    def stream_ohlcv(self, symbols: list[str], timeframes: list[str]) -> Iterable[Candle]:
+        topics = []
+        for symbol in symbols:
+            for timeframe in timeframes:
+                interval = _map_timeframe(timeframe)
+                topics.append(f"kline.{interval}.{symbol}")
+
+        output: queue.Queue[Candle] = queue.Queue()
+        stop_event = threading.Event()
+
+        async def _listen() -> None:
+            import websockets
+
+            async with websockets.connect(self.ws_url, ping_interval=20) as ws:
+                await ws.send(json.dumps({"op": "subscribe", "args": topics}))
+                while not stop_event.is_set():
+                    msg = await ws.recv()
+                    payload = json.loads(msg)
+                    if "topic" not in payload:
+                        continue
+                    topic = payload.get("topic", "")
+                    if not topic.startswith("kline."):
+                        continue
+                    data = payload.get("data") or []
+                    if isinstance(data, dict):
+                        data = [data]
+                    for item in data:
+                        if not item.get("confirm", False):
+                            continue
+                        ts = _to_seconds(item.get("start"))
+                        candle = Candle(
+                            timestamp=ts,
+                            open=float(item.get("open")),
+                            high=float(item.get("high")),
+                            low=float(item.get("low")),
+                            close=float(item.get("close")),
+                            volume=float(item.get("volume")),
+                            symbol=item.get("symbol"),
+                            timeframe=_timeframe_from_topic(topic),
+                            exchange=self.exchange_name,
+                        )
+                        output.put(candle)
+
+        def _run() -> None:
+            asyncio.run(_listen())
+
+        thread = threading.Thread(target=_run, daemon=True)
+        thread.start()
+
+        while True:
+            yield output.get()
 
 
 class BybitAdapter(ExchangeAdapter):
@@ -101,3 +163,34 @@ def _map_timeframe(timeframe: str) -> str:
     if timeframe not in mapping:
         raise ValueError(f"Unsupported timeframe for Bybit: {timeframe}")
     return mapping[timeframe]
+
+
+def _timeframe_from_topic(topic: str) -> str:
+    parts = topic.split(".")
+    if len(parts) < 3:
+        return "1m"
+    interval = parts[1]
+    reverse = {
+        "1": "1m",
+        "3": "3m",
+        "5": "5m",
+        "15": "15m",
+        "30": "30m",
+        "60": "1h",
+        "120": "2h",
+        "240": "4h",
+        "360": "6h",
+        "720": "12h",
+        "D": "1d",
+        "W": "1w",
+    }
+    return reverse.get(interval, "1m")
+
+
+def _to_seconds(value: Any) -> int:
+    if value is None:
+        return 0
+    ts = int(value)
+    if ts > 10_000_000_000:
+        return ts // 1000
+    return ts

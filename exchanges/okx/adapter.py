@@ -59,6 +59,9 @@ class OkxWsClient(WsClient):
     def subscribe(self, channel: str) -> None:
         raise NotImplementedError("Implement OKX WS subscribe")
 
+    def stream_ohlcv(self, symbols: list[str], timeframes: list[str]):
+        raise NotImplementedError("Implement OKX WS stream")
+
 
 class OkxAdapter(ExchangeAdapter):
     name = "okx"

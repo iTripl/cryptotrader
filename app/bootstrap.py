@@ -23,7 +23,12 @@ class Bootstrap:
         container = Container(self.config)
         return TradingApplication(
             config=self.config,
-            mode_runner=ModeRunner(self.config, container.parquet_reader(), container.data_auto_loader()),
+            mode_runner=ModeRunner(
+                self.config,
+                container.parquet_reader(),
+                container.data_auto_loader(),
+                container.exchange_adapter(),
+            ),
             strategy_manager=container.strategy_manager(),
             risk_manager=container.risk_manager(),
             execution_engine=container.execution_engine(),

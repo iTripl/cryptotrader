@@ -5,6 +5,7 @@ from typing import Iterable
 
 from config.config_schema import AppConfig
 from data.schemas import Candle
+from exchanges.base_exchange import ExchangeAdapter
 from data.simulated import SyntheticDataSource
 from data.auto_loader import DataAutoLoader
 from data.storage.parquet_reader import ParquetReader
@@ -16,10 +17,17 @@ logger = get_logger("app.mode")
 
 
 class ModeRunner:
-    def __init__(self, config: AppConfig, reader: ParquetReader, auto_loader: DataAutoLoader | None = None) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        reader: ParquetReader,
+        auto_loader: DataAutoLoader | None = None,
+        exchange_adapter: ExchangeAdapter | None = None,
+    ) -> None:
         self.config = config
         self.reader = reader
         self.auto_loader = auto_loader
+        self.exchange_adapter = exchange_adapter
 
     def stream(self) -> Iterable[Candle]:
         if self.config.runtime.mode == "backtest":
@@ -53,6 +61,8 @@ class ModeRunner:
                 for candle in candles
                 if candle.timestamp >= start_ts and (end_ts is None or candle.timestamp <= end_ts)
             ]
+        if self.config.backtest.max_candles_per_series > 0:
+            candles = self._cap_per_series(candles, self.config.backtest.max_candles_per_series)
         logger.info("backtest candles loaded: %d", len(candles))
         if not candles:
             raise RuntimeError("no backtest candles available after filtering")
@@ -68,16 +78,18 @@ class ModeRunner:
         return start_ts, end_ts
 
     def _forward_stream(self) -> Iterable[Candle]:
-        if self.config.runtime.dry_run:
-            return self._synthetic_stream()
-        logger.warning("forward mode requires live data connector")
-        return self._synthetic_stream()
+        return self._live_stream()
 
     def _live_stream(self) -> Iterable[Candle]:
         if self.config.runtime.dry_run:
             return self._synthetic_stream()
-        logger.warning("live mode requires exchange WS connector")
-        return self._synthetic_stream()
+        if not self.exchange_adapter:
+            raise RuntimeError("Exchange adapter required for live stream")
+        logger.info("starting live stream via exchange WS")
+        return self.exchange_adapter.stream_ohlcv(
+            list(self.config.symbols.symbols),
+            list(self.config.symbols.timeframes),
+        )
 
     def _synthetic_stream(self) -> Iterable[Candle]:
         streams = []
@@ -106,3 +118,17 @@ class ModeRunner:
             steps = int(self.config.backtest.days_back * 86400 / step)
             return max(50, min(steps, 5000))
         return 200
+
+    @staticmethod
+    def _cap_per_series(candles: list[Candle], max_per_series: int) -> list[Candle]:
+        if max_per_series <= 0:
+            return candles
+        buckets: dict[tuple[str, str], list[Candle]] = {}
+        for candle in candles:
+            key = (candle.symbol, candle.timeframe)
+            buckets.setdefault(key, []).append(candle)
+        capped: list[Candle] = []
+        for series in buckets.values():
+            series.sort(key=lambda c: c.timestamp)
+            capped.extend(series[-max_per_series:])
+        return capped
