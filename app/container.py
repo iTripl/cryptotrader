@@ -10,7 +10,7 @@ from exchanges.base_exchange import RateLimiter
 from exchanges.binance.adapter import BinanceAdapter, BinanceRestClient, BinanceWsClient
 from exchanges.bybit.adapter import BybitAdapter, BybitRestClient, BybitWsClient
 from exchanges.okx.adapter import OkxAdapter, OkxRestClient, OkxWsClient
-from execution.execution_engine import BacktestExecutionEngine, LiveExecutionEngine, PaperExecutionEngine
+from execution.execution_engine import BacktestExecutionEngine, LiveExecutionEngine
 from execution.order_manager import OrderManager
 from execution.order_tracker import BybitOrderTracker, OrderTracker
 from features.feature_pipeline import FeaturePipeline

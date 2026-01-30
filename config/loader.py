@@ -12,7 +12,6 @@ from config.config_schema import (
     parse_forward,
     parse_live,
     parse_logging,
-    parse_ml,
     parse_paths,
     parse_risk,
     parse_runtime,
@@ -27,7 +26,8 @@ def load_config(path: Path) -> AppConfig:
         raise FileNotFoundError(f"Config not found: {path}")
 
     parser = configparser.ConfigParser()
-    parser.read(path)
+    strategy_path = path.parent / "strategies.ini"
+    parser.read([str(path), str(strategy_path)])
 
     if "secrets" in parser and "env_file" in parser["secrets"]:
         env_path = Path(parser["secrets"]["env_file"]).expanduser()
@@ -43,7 +43,6 @@ def load_config(path: Path) -> AppConfig:
         "strategy",
         "paths",
         "logging",
-        "ml",
         "backtest",
         "forward",
         "live",
@@ -57,7 +56,6 @@ def load_config(path: Path) -> AppConfig:
     strategy = parse_strategy(resolve_mapping(dict(parser["strategy"])))
     paths = parse_paths(resolve_mapping(dict(parser["paths"])))
     logging_cfg = parse_logging(resolve_mapping(dict(parser["logging"])))
-    ml_cfg = parse_ml(resolve_mapping(dict(parser["ml"])))
     backtest = parse_backtest(resolve_mapping(dict(parser["backtest"])))
     forward = parse_forward(resolve_mapping(dict(parser["forward"])))
     live = parse_live(resolve_mapping(dict(parser["live"])))
@@ -82,7 +80,6 @@ def load_config(path: Path) -> AppConfig:
         strategy_params=strategy_params,
         paths=paths,
         logging=logging_cfg,
-        ml=ml_cfg,
         backtest=backtest,
         forward=forward,
         live=live,

@@ -82,6 +82,7 @@ class NoiseStrategy(Strategy):
                     "strategy": self.name,
                     "timestamp": candle.timestamp,
                     "price": candle.close,
+                    "timeframe": candle.timeframe,
                     "reason": "noise",
                     "force_execute": True,
                     "order_notional": self.order_notional,

@@ -3,7 +3,7 @@
 ## Prerequisites
 - Python 3.11+
 - Linux VDS (systemd recommended)
-- Writable paths for `Data/`, `State/`, `Logs/`
+- Writable paths for `runtime/data/`, `runtime/state/`, `runtime/logs/`
 
 ## Install
 ```bash
@@ -30,10 +30,10 @@ python main.py --config config/config.ini
 ```
 
 ## Logs
-- `Logs/system.log`
-- `Logs/execution.log`
-- `Logs/strategies.log`
-- `Logs/errors.log`
+- `runtime/logs/system.log`
+- `runtime/logs/execution.log`
+- `runtime/logs/strategies.log`
+- `runtime/logs/errors.log`
 
 ## systemd example
 ```

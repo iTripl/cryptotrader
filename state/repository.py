@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from state.models import BacktestMetrics, BacktestSummary, Fill, MlRecommendation, Order, Trade, TradeMetrics
+from state.models import BacktestMetrics, BacktestSummary, Fill, Order, Trade, TradeMetrics
 
 
 class StateRepository:
@@ -27,10 +27,6 @@ class StateRepository:
     def save_backtest_metrics(self, metrics: BacktestMetrics) -> None:
         raise NotImplementedError
 
-    def save_ml_recommendation(self, recommendation: MlRecommendation) -> None:
-        raise NotImplementedError
-
-
 @dataclass
 class InMemoryStateRepository(StateRepository):
     orders: list[Order] = field(default_factory=list)
@@ -39,7 +35,6 @@ class InMemoryStateRepository(StateRepository):
     backtest_summaries: list[BacktestSummary] = field(default_factory=list)
     trade_metrics: list[TradeMetrics] = field(default_factory=list)
     backtest_metrics: list[BacktestMetrics] = field(default_factory=list)
-    ml_recommendations: list[MlRecommendation] = field(default_factory=list)
 
     def save_order(self, order: Order) -> None:
         self.orders.append(order)
@@ -62,5 +57,3 @@ class InMemoryStateRepository(StateRepository):
     def save_backtest_metrics(self, metrics: BacktestMetrics) -> None:
         self.backtest_metrics.append(metrics)
 
-    def save_ml_recommendation(self, recommendation: MlRecommendation) -> None:
-        self.ml_recommendations.append(recommendation)

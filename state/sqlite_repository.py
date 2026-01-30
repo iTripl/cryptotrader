@@ -5,7 +5,7 @@ import sqlite3
 import threading
 from pathlib import Path
 
-from state.models import BacktestMetrics, BacktestSummary, Fill, MlRecommendation, Order, Trade, TradeMetrics
+from state.models import BacktestMetrics, BacktestSummary, Fill, Order, Trade, TradeMetrics
 from state.repository import StateRepository
 
 
@@ -111,15 +111,6 @@ class SqliteStateRepository(StateRepository):
                 calmar_ratio REAL,
                 sharpe REAL,
                 sortino REAL
-            )
-            """
-        )
-        self._conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS ml_recommendations (
-                run_id TEXT PRIMARY KEY,
-                created_at INTEGER,
-                payload_json TEXT
             )
             """
         )
@@ -294,18 +285,6 @@ class SqliteStateRepository(StateRepository):
                     metrics.sharpe,
                     metrics.sortino,
                 ),
-            )
-            self._conn.commit()
-
-    def save_ml_recommendation(self, recommendation: MlRecommendation) -> None:
-        with self._lock:
-            self._conn.execute(
-                """
-                INSERT OR REPLACE INTO ml_recommendations (
-                    run_id, created_at, payload_json
-                ) VALUES (?, ?, ?)
-                """,
-                (recommendation.run_id, recommendation.created_at, recommendation.payload_json),
             )
             self._conn.commit()
 

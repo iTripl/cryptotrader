@@ -135,23 +135,6 @@ class LiveExecutionEngine(ExecutionEngine):
         self.adapter.rest.place_order(sell_order)
 
 
-class PaperExecutionEngine(ExecutionEngine):
-    def __init__(self, order_manager: OrderManager) -> None:
-        self.order_manager = order_manager
-
-    def execute(self, signal: Signal, decision_size: float, portfolio: PortfolioState) -> ExecutionResult:
-        order = self.order_manager.build_order(signal, decision_size)
-        logger.debug(
-            "paper order filled symbol=%s side=%s qty=%s type=%s",
-            order.symbol,
-            order.side,
-            order.quantity,
-            order.order_type,
-        )
-        response = OrderResponse(order_id=order.client_order_id, status="filled", client_order_id=order.client_order_id)
-        return ExecutionResult(order=order, response=response)
-
-
 class BacktestExecutionEngine(ExecutionEngine):
     def __init__(self, order_manager: OrderManager, fee_bps: float, slippage_bps: float) -> None:
         self.order_manager = order_manager

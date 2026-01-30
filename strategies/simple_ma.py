@@ -76,6 +76,7 @@ class SimpleMovingAverageCrossStrategy(Strategy):
                     "strategy": self.name,
                     "timestamp": candle.timestamp,
                     "price": candle.close,
+                    "timeframe": candle.timeframe,
                     "fast_window": self.fast_window,
                     "slow_window": self.slow_window,
                     "fast_ma": fast,

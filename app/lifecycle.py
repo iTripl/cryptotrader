@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from collections import deque
 from dataclasses import dataclass
 
 from analytics.collector import StatisticsCollector
@@ -9,8 +10,6 @@ from config.config_schema import AppConfig
 from execution.execution_engine import ExecutionEngine
 from execution.order_tracker import FillEvent, OrderTracker
 from features.feature_pipeline import FeaturePipeline
-from ml.auto_apply import apply_recommendation
-from ml.backtest_analyzer import BacktestAnalyzer
 from monitoring.killswitch import KillSwitch
 from risk.metrics import compute_exposure, update_daily_drawdown
 from risk.risk_manager import RiskManager
@@ -33,9 +32,17 @@ from state.state_machine import OrderStateMachine
 from state.repository import StateRepository
 from strategies.manager import StrategyManager
 from utils.logger import get_logger, log_extra
+from utils.time import timeframe_to_seconds
 
 
 logger = get_logger("app.lifecycle")
+
+
+@dataclass
+class AtrState:
+    trs: deque[float]
+    prev_close: float | None = None
+    atr: float = 0.0
 
 
 @dataclass
@@ -76,6 +83,7 @@ class TradingApplication:
         last_prices: dict[str, float] = {}
         last_timestamp = 0
         self._last_prices = last_prices
+        self._atr_state: dict[tuple[str, str], AtrState] = {}
         candle_count = 0
 
         try:
@@ -84,8 +92,9 @@ class TradingApplication:
                     logger.error("killswitch triggered: %s", self.killswitch.reason)
                     self._handle_killswitch()
                     break
-                if self.config.runtime.mode == "backtest":
-                    self._apply_backtest_stops(candle, portfolio)
+                self._update_atr(candle)
+                self._apply_candle_stops(candle, portfolio)
+                self._apply_time_exits(candle, portfolio)
                 _ = self.feature_pipeline.transform(candle)
                 last_prices[candle.symbol] = candle.close
                 last_timestamp = candle.timestamp
@@ -155,14 +164,6 @@ class TradingApplication:
                 )
                 self.state_repo.save_backtest_metrics(metrics)
                 self._print_backtest_report(report, portfolio.equity, simulated_days)
-                if self.config.ml.enabled:
-                    analyzer = BacktestAnalyzer(self.config)
-                    result = analyzer.analyze(self.stats.trades(), self.config.risk.initial_equity, portfolio.equity)
-                    recommendation = analyzer.to_recommendation(result)
-                    self.state_repo.save_ml_recommendation(recommendation)
-                    self._print_ml_recommendation(result)
-                    self._write_ml_recommendation(result)
-                    self._prompt_apply_ml(result)
             self.state_repo.close()
 
     def _handle_signal(self, signal: Signal, portfolio: PortfolioState, timestamp: int) -> None:
@@ -278,81 +279,24 @@ class TradingApplication:
         price = self._parse_float(metadata.get("price"))
         if price <= 0:
             return
+        timeframe = metadata.get("timeframe")
+        atr_value = self._atr_value(signal.symbol, timeframe) if timeframe else 0.0
         side = signal.direction
-        position = portfolio.open_positions.get(signal.symbol)
-        if position is None and side in {"LONG", "SHORT"}:
-            portfolio.open_positions[signal.symbol] = Position(
-                symbol=signal.symbol,
-                quantity=size,
-                entry_price=price,
-                side=side,
-                max_price=price,
-                min_price=price,
-            )
-            self._refresh_portfolio_metrics(portfolio, timestamp)
+        if side not in {"LONG", "SHORT"}:
             return
-
-        if position is None:
-            return
-
-        if side == position.side:
-            return
-
-        entry_price = position.entry_price
-        close_price = price
-        slip, fee = self._execution_costs()
-
-        if position.side == "LONG":
-            exec_entry = entry_price * (1 + slip)
-            exec_exit = close_price * (1 - slip)
-            pnl = (exec_exit - exec_entry) * position.quantity
-        else:
-            exec_entry = entry_price * (1 - slip)
-            exec_exit = close_price * (1 + slip)
-            pnl = (exec_entry - exec_exit) * position.quantity
-
-        fees = (exec_entry + exec_exit) * position.quantity * fee
-        pnl -= fees
-        portfolio.equity += pnl
-        trade = Trade(
-            trade_id=str(uuid4()),
-            order_id=order_id,
+        self._apply_execution(
             symbol=signal.symbol,
-            entry_price=exec_entry,
-            exit_price=exec_exit,
-            quantity=position.quantity,
-            pnl=pnl,
-            fees=fees,
-            slippage_bps=self.config.backtest.slippage_bps,
+            side=side,
+            quantity=size,
+            price=price,
+            portfolio=portfolio,
+            timestamp=timestamp,
+            order_id=order_id,
             strategy=metadata.get("strategy"),
+            allow_add=False,
+            max_hold_seconds=self._parse_hold_seconds(signal.horizon),
+            entry_atr=atr_value,
         )
-        logger.debug(
-            "sim trade closed symbol=%s entry=%s exit=%s qty=%s pnl=%s fees=%s",
-            trade.symbol,
-            trade.entry_price,
-            trade.exit_price,
-            trade.quantity,
-            trade.pnl,
-            trade.fees,
-        )
-        self.state_repo.save_trade(trade)
-        self.stats.add_trade(trade)
-        self.state_repo.save_trade_metrics(self._trade_metrics(trade))
-        log_extra(
-            logger,
-            "trade closed",
-            symbol=trade.symbol,
-            pnl=trade.pnl,
-            fees=trade.fees,
-            quantity=trade.quantity,
-        )
-        portfolio.open_positions.pop(signal.symbol, None)
-        self._refresh_portfolio_metrics(portfolio, timestamp)
-
-        if pnl < 0:
-            portfolio.consecutive_losses += 1
-        else:
-            portfolio.consecutive_losses = 0
 
     def _process_fill_events(self, portfolio: PortfolioState) -> None:
         if not self.order_tracker:
@@ -391,51 +335,160 @@ class TradingApplication:
             fee=fill.fee,
         )
 
+        self._apply_execution(
+            symbol=symbol,
+            side=side,
+            quantity=qty,
+            price=price,
+            portfolio=portfolio,
+            timestamp=fill.timestamp,
+            order_id=fill.order_id,
+            strategy="fill_execution",
+            fee_override=fill.fee,
+            slippage_override=0.0,
+            allow_add=True,
+            max_hold_seconds=0,
+            entry_atr=0.0,
+        )
+
+    def _apply_execution(
+        self,
+        symbol: str,
+        side: str,
+        quantity: float,
+        price: float,
+        portfolio: PortfolioState,
+        timestamp: int,
+        order_id: str,
+        strategy: str | None,
+        allow_add: bool,
+        max_hold_seconds: int,
+        entry_atr: float,
+        fee_override: float | None = None,
+        slippage_override: float | None = None,
+    ) -> None:
+        if quantity <= 0 or price <= 0:
+            return
         position = portfolio.open_positions.get(symbol)
+        slippage_rate = self._slippage_rate(slippage_override)
+        entry_fee = self._fee_for_qty(price, quantity, fee_override)
+
         if position is None:
             portfolio.open_positions[symbol] = Position(
                 symbol=symbol,
-                quantity=qty,
+                quantity=quantity,
                 entry_price=price,
                 side=side,
                 max_price=price,
                 min_price=price,
+                entry_ts=timestamp,
+                max_hold_seconds=max_hold_seconds,
+                entry_atr=entry_atr if entry_atr > 0 else 0.0,
+                fees_paid=entry_fee,
             )
-            self._refresh_portfolio_metrics(portfolio, fill.timestamp)
+            self._refresh_portfolio_metrics(portfolio, timestamp)
             return
 
         if position.side == side:
-            new_qty = position.quantity + qty
-            position.entry_price = (position.entry_price * position.quantity + price * qty) / new_qty
+            if not allow_add:
+                return
+            new_qty = position.quantity + quantity
+            position.entry_price = (position.entry_price * position.quantity + price * quantity) / new_qty
             position.quantity = new_qty
             position.max_price = max(position.max_price, price)
             position.min_price = min(position.min_price, price)
-            self._refresh_portfolio_metrics(portfolio, fill.timestamp)
+            position.fees_paid += entry_fee
+            if position.entry_atr <= 0 and entry_atr > 0:
+                position.entry_atr = entry_atr
+            self._refresh_portfolio_metrics(portfolio, timestamp)
             return
 
-        exit_qty = min(position.quantity, qty)
-        if position.side == "LONG":
-            pnl = (price - position.entry_price) * exit_qty
-        else:
-            pnl = (position.entry_price - price) * exit_qty
-        fee_share = fill.fee * (exit_qty / qty) if qty else 0.0
-        pnl -= fee_share
-        portfolio.equity += pnl
+        exit_qty = min(position.quantity, quantity)
+        exit_fee_override = self._allocate_fee_override(fee_override, exit_qty, quantity)
+        exit_fee = self._fee_for_qty(price, exit_qty, exit_fee_override)
+        entry_fee_share = 0.0
+        if position.quantity > 0:
+            entry_fee_share = position.fees_paid * (exit_qty / position.quantity)
+        pnl = self._close_position(
+            position=position,
+            exit_price=price,
+            exit_qty=exit_qty,
+            portfolio=portfolio,
+            timestamp=timestamp,
+            order_id=order_id,
+            strategy=strategy,
+            slippage_rate=slippage_rate,
+            exit_fee=exit_fee,
+            entry_fee_share=entry_fee_share,
+        )
 
+        position.quantity -= exit_qty
+        position.fees_paid = max(0.0, position.fees_paid - entry_fee_share)
+        if position.quantity <= 0:
+            portfolio.open_positions.pop(symbol, None)
+        if quantity > exit_qty:
+            remaining_qty = quantity - exit_qty
+            remaining_fee = max(0.0, entry_fee - exit_fee)
+            portfolio.open_positions[symbol] = Position(
+                symbol=symbol,
+                quantity=remaining_qty,
+                entry_price=price,
+                side=side,
+                max_price=price,
+                min_price=price,
+                entry_ts=timestamp,
+                max_hold_seconds=max_hold_seconds,
+                entry_atr=entry_atr if entry_atr > 0 else 0.0,
+                fees_paid=remaining_fee,
+            )
+        self._refresh_portfolio_metrics(portfolio, timestamp)
+
+        if pnl < 0:
+            portfolio.consecutive_losses += 1
+        else:
+            portfolio.consecutive_losses = 0
+
+    def _close_position(
+        self,
+        position: Position,
+        exit_price: float,
+        exit_qty: float,
+        portfolio: PortfolioState,
+        timestamp: int,
+        order_id: str,
+        strategy: str | None,
+        slippage_rate: float,
+        exit_fee: float,
+        entry_fee_share: float,
+    ) -> float:
+        if exit_qty <= 0:
+            return 0.0
+        if position.side == "LONG":
+            exec_entry = position.entry_price * (1 + slippage_rate)
+            exec_exit = exit_price * (1 - slippage_rate)
+            pnl = (exec_exit - exec_entry) * exit_qty
+        else:
+            exec_entry = position.entry_price * (1 - slippage_rate)
+            exec_exit = exit_price * (1 + slippage_rate)
+            pnl = (exec_entry - exec_exit) * exit_qty
+
+        fees = entry_fee_share + exit_fee
+        pnl -= fees
+        portfolio.equity += pnl
         trade = Trade(
             trade_id=str(uuid4()),
-            order_id=fill.order_id,
-            symbol=symbol,
-            entry_price=position.entry_price,
-            exit_price=price,
+            order_id=order_id,
+            symbol=position.symbol,
+            entry_price=exec_entry,
+            exit_price=exec_exit,
             quantity=exit_qty,
             pnl=pnl,
-            fees=fee_share,
-            slippage_bps=0.0,
-            strategy="fill_execution",
+            fees=fees,
+            slippage_bps=slippage_rate * 10000.0,
+            strategy=strategy,
         )
         logger.debug(
-            "fill trade closed symbol=%s entry=%s exit=%s qty=%s pnl=%s fees=%s",
+            "trade closed symbol=%s entry=%s exit=%s qty=%s pnl=%s fees=%s",
             trade.symbol,
             trade.entry_price,
             trade.exit_price,
@@ -448,31 +501,38 @@ class TradingApplication:
         self.state_repo.save_trade_metrics(self._trade_metrics(trade))
         log_extra(
             logger,
-            "trade closed (fill)",
+            "trade closed",
             symbol=trade.symbol,
             pnl=trade.pnl,
+            fees=trade.fees,
             quantity=trade.quantity,
         )
+        return pnl
 
-        position.quantity -= exit_qty
-        if position.quantity <= 0:
-            portfolio.open_positions.pop(symbol, None)
-        if qty > exit_qty:
-            remaining = qty - exit_qty
-            portfolio.open_positions[symbol] = Position(
-                symbol=symbol,
-                quantity=remaining,
-                entry_price=price,
-                side=side,
-                max_price=price,
-                min_price=price,
-            )
-        self._refresh_portfolio_metrics(portfolio, fill.timestamp)
+    def _slippage_rate(self, override: float | None = None) -> float:
+        if override is not None:
+            return override
+        if self.config.runtime.mode == "live":
+            return 0.0
+        return self.config.backtest.slippage_bps / 10000.0
 
-        if pnl < 0:
-            portfolio.consecutive_losses += 1
-        else:
-            portfolio.consecutive_losses = 0
+    def _fee_rate(self) -> float:
+        if self.config.runtime.mode == "live":
+            return 0.0
+        return self.config.backtest.fee_bps / 10000.0
+
+    def _fee_for_qty(self, price: float, quantity: float, fee_override: float | None = None) -> float:
+        if fee_override is not None:
+            return fee_override
+        return price * quantity * self._fee_rate()
+
+    @staticmethod
+    def _allocate_fee_override(fee_override: float | None, portion_qty: float, total_qty: float) -> float | None:
+        if fee_override is None:
+            return None
+        if total_qty <= 0:
+            return 0.0
+        return fee_override * (portion_qty / total_qty)
 
     def _refresh_portfolio_metrics(self, portfolio: PortfolioState, timestamp: int) -> None:
         update_daily_drawdown(portfolio, timestamp)
@@ -504,6 +564,41 @@ class TradingApplication:
             return float(value)
         except (TypeError, ValueError):
             return 0.0
+
+    @staticmethod
+    def _parse_hold_seconds(horizon: str) -> int:
+        try:
+            return timeframe_to_seconds(horizon)
+        except (TypeError, ValueError):
+            return 0
+
+    def _update_atr(self, candle) -> None:
+        period = self.config.risk.atr_period
+        if period <= 0:
+            return
+        key = (candle.symbol, candle.timeframe)
+        state = self._atr_state.get(key)
+        if state is None:
+            state = AtrState(trs=deque(maxlen=period))
+            self._atr_state[key] = state
+        if state.prev_close is None:
+            tr = candle.high - candle.low
+        else:
+            tr = max(
+                candle.high - candle.low,
+                abs(candle.high - state.prev_close),
+                abs(candle.low - state.prev_close),
+            )
+        state.trs.append(tr)
+        if len(state.trs) >= period:
+            state.atr = sum(state.trs) / len(state.trs)
+        state.prev_close = candle.close
+
+    def _atr_value(self, symbol: str, timeframe: str) -> float:
+        state = self._atr_state.get((symbol, timeframe))
+        if not state:
+            return 0.0
+        return state.atr
 
     @staticmethod
     def _transition_order(order: Order, target: OrderState) -> Order:
@@ -546,13 +641,6 @@ class TradingApplication:
         except Exception as exc:  # noqa: BLE001
             logger.warning("demo handshake failed: %s", exc)
 
-    def _execution_costs(self) -> tuple[float, float]:
-        if self.config.runtime.mode == "live":
-            return 0.0, 0.0
-        slip = self.config.backtest.slippage_bps / 10000.0
-        fee = self.config.backtest.fee_bps / 10000.0
-        return slip, fee
-
     @staticmethod
     def _print_backtest_report(report, final_equity: float, simulated_days: int) -> None:
         print("=== Backtest Summary ===")
@@ -566,49 +654,31 @@ class TradingApplication:
         print(f"PnL %: {report.pnl_pct:.2%}")
         print(f"Final equity: {final_equity:.2f}")
 
-    @staticmethod
-    def _print_ml_recommendation(result) -> None:
-        print("=== ML Recommendation ===")
-        print(f"Stop loss pct: {result.stop_loss_pct:.4f}")
-        print(f"Take profit pct: {result.take_profit_pct:.4f}")
-        if result.strategy_confidence:
-            for strategy, confidence in result.strategy_confidence.items():
-                print(f"{strategy} confidence: {confidence:.2f}")
-        if result.notes:
-            print("Notes: " + "; ".join(result.notes))
-
-    def _write_ml_recommendation(self, result) -> None:
-        payload = {
-            "stop_loss_pct": result.stop_loss_pct,
-            "take_profit_pct": result.take_profit_pct,
-            "strategy_confidence": result.strategy_confidence,
-            "notes": result.notes,
-        }
-        path = self.config.paths.state_dir / "ml_recommendations.json"
-        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-
-    def _prompt_apply_ml(self, result) -> None:
-        try:
-            answer = input("Apply ML recommendations to config.ini? [y/N]: ").strip().lower()
-        except EOFError:
-            return
-        if answer in {"y", "yes"}:
-            apply_recommendation(self.config.config_path, result)
-            print(f"Updated config: {self.config.config_path}")
-
-    def _apply_backtest_stops(self, candle, portfolio: PortfolioState) -> None:
+    def _apply_candle_stops(self, candle, portfolio: PortfolioState) -> None:
         if not portfolio.open_positions:
             return
         stop_pct = self.config.risk.stop_loss_pct
         tp_pct = self.config.risk.take_profit_pct
         trailing_pct = self.config.risk.trailing_take_profit_pct
-        if stop_pct <= 0 and tp_pct <= 0 and trailing_pct <= 0:
+        atr_enabled = (
+            self.config.risk.atr_period > 0
+            and (
+                self.config.risk.atr_sl_mult > 0
+                or self.config.risk.atr_tp_mult > 0
+                or self.config.risk.atr_trailing_mult > 0
+            )
+        )
+        if stop_pct <= 0 and tp_pct <= 0 and trailing_pct <= 0 and not atr_enabled:
             return
 
         updated = False
+        slippage_rate = self._slippage_rate()
+        atr_value = self._atr_value(candle.symbol, candle.timeframe)
         for symbol, position in list(portfolio.open_positions.items()):
             if symbol != candle.symbol:
                 continue
+            if position.entry_atr <= 0 and atr_value > 0:
+                position.entry_atr = atr_value
             if position.side == "LONG":
                 position.max_price = max(position.max_price, candle.high)
                 position.min_price = min(position.min_price, candle.low)
@@ -618,30 +688,62 @@ class TradingApplication:
             stop_price = None
             take_price = None
             trailing_price = None
-            if position.side == "LONG":
-                if stop_pct > 0:
-                    stop_price = position.entry_price * (1 - stop_pct)
-                if tp_pct > 0:
-                    take_price = position.entry_price * (1 + tp_pct)
-                if trailing_pct > 0:
-                    activation = position.entry_price * (1 + (tp_pct if tp_pct > 0 else trailing_pct))
-                    if position.max_price >= activation:
-                        trailing_price = position.max_price * (1 - trailing_pct)
-                stop_hit = stop_price is not None and candle.low <= stop_price
-                take_hit = take_price is not None and candle.high >= take_price
-                trailing_hit = trailing_price is not None and candle.low <= trailing_price
+            atr_base = position.entry_atr if position.entry_atr > 0 else atr_value
+            if atr_enabled:
+                if atr_base <= 0:
+                    continue
+                sl_dist = self.config.risk.atr_sl_mult * atr_base if self.config.risk.atr_sl_mult > 0 else None
+                tp_dist = self.config.risk.atr_tp_mult * atr_base if self.config.risk.atr_tp_mult > 0 else None
+                trail_dist = (
+                    self.config.risk.atr_trailing_mult * atr_base
+                    if self.config.risk.atr_trailing_mult > 0
+                    else None
+                )
+                if position.side == "LONG":
+                    if sl_dist:
+                        stop_price = position.entry_price - sl_dist
+                    if tp_dist:
+                        take_price = position.entry_price + tp_dist
+                    if trail_dist and position.max_price - position.entry_price >= trail_dist:
+                        trailing_price = position.max_price - trail_dist
+                    stop_hit = stop_price is not None and candle.low <= stop_price
+                    take_hit = take_price is not None and candle.high >= take_price
+                    trailing_hit = trailing_price is not None and candle.low <= trailing_price
+                else:
+                    if sl_dist:
+                        stop_price = position.entry_price + sl_dist
+                    if tp_dist:
+                        take_price = position.entry_price - tp_dist
+                    if trail_dist and position.entry_price - position.min_price >= trail_dist:
+                        trailing_price = position.min_price + trail_dist
+                    stop_hit = stop_price is not None and candle.high >= stop_price
+                    take_hit = take_price is not None and candle.low <= take_price
+                    trailing_hit = trailing_price is not None and candle.high >= trailing_price
             else:
-                if stop_pct > 0:
-                    stop_price = position.entry_price * (1 + stop_pct)
-                if tp_pct > 0:
-                    take_price = position.entry_price * (1 - tp_pct)
-                if trailing_pct > 0:
-                    activation = position.entry_price * (1 - (tp_pct if tp_pct > 0 else trailing_pct))
-                    if position.min_price <= activation:
-                        trailing_price = position.min_price * (1 + trailing_pct)
-                stop_hit = stop_price is not None and candle.high >= stop_price
-                take_hit = take_price is not None and candle.low <= take_price
-                trailing_hit = trailing_price is not None and candle.high >= trailing_price
+                if position.side == "LONG":
+                    if stop_pct > 0:
+                        stop_price = position.entry_price * (1 - stop_pct)
+                    if tp_pct > 0:
+                        take_price = position.entry_price * (1 + tp_pct)
+                    if trailing_pct > 0:
+                        activation = position.entry_price * (1 + (tp_pct if tp_pct > 0 else trailing_pct))
+                        if position.max_price >= activation:
+                            trailing_price = position.max_price * (1 - trailing_pct)
+                    stop_hit = stop_price is not None and candle.low <= stop_price
+                    take_hit = take_price is not None and candle.high >= take_price
+                    trailing_hit = trailing_price is not None and candle.low <= trailing_price
+                else:
+                    if stop_pct > 0:
+                        stop_price = position.entry_price * (1 + stop_pct)
+                    if tp_pct > 0:
+                        take_price = position.entry_price * (1 - tp_pct)
+                    if trailing_pct > 0:
+                        activation = position.entry_price * (1 - (tp_pct if tp_pct > 0 else trailing_pct))
+                        if position.min_price <= activation:
+                            trailing_price = position.min_price * (1 + trailing_pct)
+                    stop_hit = stop_price is not None and candle.high >= stop_price
+                    take_hit = take_price is not None and candle.low <= take_price
+                    trailing_hit = trailing_price is not None and candle.high >= trailing_price
 
             if not stop_hit and not take_hit and not trailing_hit:
                 continue
@@ -656,36 +758,57 @@ class TradingApplication:
                 exit_price = take_price
                 exit_reason = "take_profit"
 
-            slip = self.config.backtest.slippage_bps / 10000.0
-            fee = self.config.backtest.fee_bps / 10000.0
-
-            if position.side == "LONG":
-                exec_entry = position.entry_price * (1 + slip)
-                exec_exit = exit_price * (1 - slip)
-                pnl = (exec_exit - exec_entry) * position.quantity
-            else:
-                exec_entry = position.entry_price * (1 - slip)
-                exec_exit = exit_price * (1 + slip)
-                pnl = (exec_entry - exec_exit) * position.quantity
-
-            fees = (exec_entry + exec_exit) * position.quantity * fee
-            pnl -= fees
-            portfolio.equity += pnl
-            trade = Trade(
-                trade_id=str(uuid4()),
+            exit_fee = self._fee_for_qty(exit_price, position.quantity)
+            pnl = self._close_position(
+                position=position,
+                exit_price=exit_price,
+                exit_qty=position.quantity,
+                portfolio=portfolio,
+                timestamp=candle.timestamp,
                 order_id=f"{exit_reason}_{uuid4()}",
-                symbol=symbol,
-                entry_price=exec_entry,
-                exit_price=exec_exit,
-                quantity=position.quantity,
-                pnl=pnl,
-                fees=fees,
-                slippage_bps=self.config.backtest.slippage_bps,
                 strategy="stop_exit",
+                slippage_rate=slippage_rate,
+                exit_fee=exit_fee,
+                entry_fee_share=position.fees_paid,
             )
-            self.state_repo.save_trade(trade)
-            self.stats.add_trade(trade)
-            self.state_repo.save_trade_metrics(self._trade_metrics(trade))
+            portfolio.open_positions.pop(symbol, None)
+            updated = True
+            if pnl < 0:
+                portfolio.consecutive_losses += 1
+            else:
+                portfolio.consecutive_losses = 0
+
+        if updated:
+            self._refresh_portfolio_metrics(portfolio, candle.timestamp)
+
+    def _apply_time_exits(self, candle, portfolio: PortfolioState) -> None:
+        if not portfolio.open_positions:
+            return
+        updated = False
+        slippage_rate = self._slippage_rate()
+        for symbol, position in list(portfolio.open_positions.items()):
+            if symbol != candle.symbol:
+                continue
+            if position.entry_ts <= 0 or position.max_hold_seconds <= 0:
+                continue
+            if candle.timestamp - position.entry_ts < position.max_hold_seconds:
+                continue
+            exit_price = candle.close
+            if exit_price <= 0:
+                continue
+            exit_fee = self._fee_for_qty(exit_price, position.quantity)
+            pnl = self._close_position(
+                position=position,
+                exit_price=exit_price,
+                exit_qty=position.quantity,
+                portfolio=portfolio,
+                timestamp=candle.timestamp,
+                order_id=f"time_exit_{uuid4()}",
+                strategy="time_exit",
+                slippage_rate=slippage_rate,
+                exit_fee=exit_fee,
+                entry_fee_share=position.fees_paid,
+            )
             portfolio.open_positions.pop(symbol, None)
             updated = True
             if pnl < 0:
@@ -704,38 +827,24 @@ class TradingApplication:
     ) -> None:
         if not portfolio.open_positions:
             return
+        slippage_rate = self._slippage_rate()
         for symbol, position in list(portfolio.open_positions.items()):
             price = last_prices.get(symbol)
             if price is None:
                 continue
-            slip = self.config.backtest.slippage_bps / 10000.0
-            fee = self.config.backtest.fee_bps / 10000.0
-            if position.side == "LONG":
-                exec_entry = position.entry_price * (1 + slip)
-                exec_exit = price * (1 - slip)
-                pnl = (exec_exit - exec_entry) * position.quantity
-            else:
-                exec_entry = position.entry_price * (1 - slip)
-                exec_exit = price * (1 + slip)
-                pnl = (exec_entry - exec_exit) * position.quantity
-            fees = (exec_entry + exec_exit) * position.quantity * fee
-            pnl -= fees
-            portfolio.equity += pnl
-            trade = Trade(
-                trade_id=str(uuid4()),
+            exit_fee = self._fee_for_qty(price, position.quantity)
+            self._close_position(
+                position=position,
+                exit_price=price,
+                exit_qty=position.quantity,
+                portfolio=portfolio,
+                timestamp=timestamp,
                 order_id=f"forced_exit_{uuid4()}",
-                symbol=symbol,
-                entry_price=exec_entry,
-                exit_price=exec_exit,
-                quantity=position.quantity,
-                pnl=pnl,
-                fees=fees,
-                slippage_bps=self.config.backtest.slippage_bps,
                 strategy="forced_exit",
+                slippage_rate=slippage_rate,
+                exit_fee=exit_fee,
+                entry_fee_share=position.fees_paid,
             )
-            self.state_repo.save_trade(trade)
-            self.stats.add_trade(trade)
-            self.state_repo.save_trade_metrics(self._trade_metrics(trade))
             portfolio.open_positions.pop(symbol, None)
         self._refresh_portfolio_metrics(portfolio, timestamp)
 

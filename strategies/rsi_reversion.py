@@ -71,6 +71,7 @@ class RsiMeanReversionStrategy(Strategy):
                     "strategy": self.name,
                     "timestamp": candle.timestamp,
                     "price": candle.close,
+                    "timeframe": candle.timeframe,
                     "rsi": rsi,
                     "overbought": self.overbought,
                     "oversold": self.oversold,

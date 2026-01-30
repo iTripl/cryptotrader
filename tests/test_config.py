@@ -56,6 +56,10 @@ volatility_adjustment_low = 1.2
 stop_loss_pct = 0.02
 take_profit_pct = 0.04
 trailing_take_profit_pct = 0.02
+atr_period = 14
+atr_sl_mult = 1.5
+atr_tp_mult = 3.0
+atr_trailing_mult = 1.0
 
 [strategy]
 confidence_floor = 0.5
@@ -94,21 +98,15 @@ horizon = 1d
 volatility_regime = normal
 
 [paths]
-data_dir = Data
-state_dir = State
-state_db = State/trading.db
-logs_dir = Logs
+data_dir = runtime/data
+state_dir = runtime/state
+state_db = runtime/state/trading.db
+logs_dir = runtime/logs
 
 [logging]
 level = INFO
 json = true
 console = true
-
-[ml]
-enabled = true
-min_trades = 10
-target_win_rate = 0.5
-max_adjustment_pct = 0.2
 
 [backtest]
 start_ts = 0
@@ -190,6 +188,10 @@ volatility_adjustment_low = 1.2
 stop_loss_pct = 0.02
 take_profit_pct = 0.04
 trailing_take_profit_pct = 0.02
+atr_period = 14
+atr_sl_mult = 1.5
+atr_tp_mult = 3.0
+atr_trailing_mult = 1.0
 
 [strategy]
 confidence_floor = 0.5
@@ -228,21 +230,15 @@ horizon = 1d
 volatility_regime = normal
 
 [paths]
-data_dir = Data
-state_dir = State
-state_db = State/trading.db
-logs_dir = Logs
+data_dir = runtime/data
+state_dir = runtime/state
+state_db = runtime/state/trading.db
+logs_dir = runtime/logs
 
 [logging]
 level = INFO
 json = true
 console = true
-
-[ml]
-enabled = true
-min_trades = 10
-target_win_rate = 0.5
-max_adjustment_pct = 0.2
 
 [backtest]
 start_ts = 0

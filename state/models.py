@@ -91,6 +91,10 @@ class Position:
     side: str
     max_price: float
     min_price: float
+    entry_ts: int = 0
+    max_hold_seconds: int = 0
+    entry_atr: float = 0.0
+    fees_paid: float = 0.0
 
 
 @dataclass
@@ -142,8 +146,3 @@ class BacktestMetrics:
     sortino: float
 
 
-@dataclass(frozen=True)
-class MlRecommendation:
-    run_id: str
-    created_at: int
-    payload_json: str

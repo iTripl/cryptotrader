@@ -85,6 +85,7 @@ class CrossSectionMomentumStrategy(Strategy):
                         "strategy": self.name,
                         "timestamp": candle.timestamp,
                         "price": last_price,
+                        "timeframe": candle.timeframe,
                         "momentum": momentum,
                         "winners": list(winners),
                     },

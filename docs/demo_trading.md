@@ -54,7 +54,7 @@ python main.py --config config/config.ini --interactive
 - **Order status polling** via `/v5/order/realtime`
 - **Execution fills** from demo private WS
 - **PnL from actual fill prices** (not signal price)
-- Trades and fills stored in `State/trading.db`
+- Trades and fills stored in `runtime/state/trading.db`
 - A one-time demo **handshake trade** (buy+sell) to verify connectivity
 
 ## Troubleshooting

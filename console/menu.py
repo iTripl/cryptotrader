@@ -13,12 +13,10 @@ class ConsoleMenu:
     def run(self) -> AppConfig:
         print("=== CryptoTrader Console ===")
         mode = self._prompt("Mode (backtest/forward/live)", self.config.runtime.mode)
-        exchange = self._prompt("Exchange (bybit/binance/okx)", self.config.runtime.exchange)
         symbols = self._prompt("Symbols (comma-separated)", ",".join(self.config.symbols.symbols))
         timeframes = self._prompt("Timeframes (comma-separated)", ",".join(self.config.symbols.timeframes))
         available = discover_strategy_specs() or list(self.config.runtime.strategy_modules)
         strategies = self._select_strategies(tuple(available), self.config.runtime.strategy_modules)
-        risk_profile = self._prompt("Risk profile", self.config.runtime.risk_profile)
 
         updated_symbols = SymbolConfig(
             symbols=tuple(s.strip() for s in symbols.split(",") if s.strip()),
@@ -28,12 +26,11 @@ class ConsoleMenu:
         runtime = replace(
             self.config.runtime,
             mode=mode,
-            exchange=exchange,
             strategy_modules=strategies,
-            risk_profile=risk_profile,
         )
         updated = replace(self.config, runtime=runtime, symbols=updated_symbols)
         updated.validate()
+        self._persist_config(updated)
         return updated
 
     @staticmethod
@@ -61,3 +58,33 @@ class ConsoleMenu:
             return selected
         selected = [spec for idx, spec in enumerate(available, start=1) if idx in indices]
         return tuple(selected) if selected else selected
+
+    @staticmethod
+    def _persist_config(config: AppConfig) -> None:
+        path = config.config_path
+        updates = {
+            "runtime": {
+                "mode": config.runtime.mode,
+                "strategy_modules": ",".join(config.runtime.strategy_modules),
+            },
+            "symbols": {
+                "symbols": ",".join(config.symbols.symbols),
+                "timeframes": ",".join(config.symbols.timeframes),
+            },
+        }
+        lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+        section = None
+        out: list[str] = []
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("[") and stripped.endswith("]"):
+                section = stripped[1:-1].lower()
+                out.append(line)
+                continue
+            if section in updates and "=" in line:
+                key = line.split("=", 1)[0].strip()
+                if key in updates[section]:
+                    out.append(f"{key} = {updates[section][key]}\n")
+                    continue
+            out.append(line)
+        path.write_text("".join(out), encoding="utf-8")

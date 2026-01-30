@@ -19,6 +19,10 @@ def test_risk_manager_blocks_consecutive_losses() -> None:
         stop_loss_pct=0.02,
         take_profit_pct=0.04,
         trailing_take_profit_pct=0.02,
+        atr_period=14,
+        atr_sl_mult=1.5,
+        atr_tp_mult=3.0,
+        atr_trailing_mult=1.0,
     )
     manager = DefaultRiskManager(risk)
     portfolio = PortfolioState(equity=10000, daily_drawdown=0.0, consecutive_losses=3)
@@ -49,6 +53,10 @@ def test_risk_manager_caps_by_exposure() -> None:
         stop_loss_pct=0.0,
         take_profit_pct=0.0,
         trailing_take_profit_pct=0.0,
+        atr_period=0,
+        atr_sl_mult=0.0,
+        atr_tp_mult=0.0,
+        atr_trailing_mult=0.0,
     )
     manager = DefaultRiskManager(risk)
     portfolio = PortfolioState(
@@ -86,6 +94,10 @@ def test_risk_manager_rejects_no_equity() -> None:
         stop_loss_pct=0.0,
         take_profit_pct=0.0,
         trailing_take_profit_pct=0.0,
+        atr_period=0,
+        atr_sl_mult=0.0,
+        atr_tp_mult=0.0,
+        atr_trailing_mult=0.0,
     )
     manager = DefaultRiskManager(risk)
     portfolio = PortfolioState(equity=0.0, daily_drawdown=0.0, consecutive_losses=0)

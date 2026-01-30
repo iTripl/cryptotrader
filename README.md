@@ -18,9 +18,8 @@ clean separation between strategy, risk, execution, and data layers.
 - `live`      : uses live data + exchange execution (demo when `paper_trading=true`)
 
 Backtest auto-downloads missing data for the configured symbols/timeframes.
-Backtest summaries (stats + final equity) are stored in `State/trading.db`.
-ML recommendations (TP/SL + confidence) are stored in `State/trading.db` table `ml_recommendations`.
-Latest recommendations are also written to `State/ml_recommendations.json`.
+Backtest summaries (stats + final equity) are stored in `runtime/state/trading.db`.
+Trade metrics for backtests are stored in `runtime/state/trading.db` table `trade_metrics`.
 
 ## How It Works
 1) **Config load**: `config.ini` is parsed and validated (no hardcoded params).
@@ -34,7 +33,7 @@ Latest recommendations are also written to `State/ml_recommendations.json`.
    - Risk checks position/exposure/expectancy and sizes orders.
    - Execution engine routes orders (paper/live/backtest).
 6) **Accounting**: positions, trades, PnL, and equity are updated for all modes.
-7) **Outputs**: structured logs + backtest summaries + ML recommendations.
+7) **Outputs**: structured logs + backtest summaries + trade metrics.
 
 ## Design highlights
 - One strategy per OS process (optional single-process for fast backtests)

@@ -11,60 +11,61 @@ from strategies.params import require_float, require_int, require_str
 
 
 @dataclass
-class DonchianState:
-    highs: Deque[float]
-    lows: Deque[float]
+class TsmomState:
     closes: Deque[float]
+    volumes: Deque[float]
     last_state: str | None = None
 
 
-class DonchianEnsembleTrendStrategy(Strategy):
-    name = "donchian_trend"
-    config_key = "donchian_trend"
+class TimeSeriesMomentumStrategy(Strategy):
+    name = "tsmom"
+    config_key = "tsmom"
 
     def __init__(self, config, params: dict[str, str]) -> None:
         super().__init__(config, params)
-        lookbacks = params.get("lookbacks", "20,50,100")
-        self.lookbacks = sorted({int(x.strip()) for x in lookbacks.split(",") if x.strip()})
-        if not self.lookbacks:
-            raise ValueError("lookbacks must contain at least one window")
-        self.min_votes = require_int(params, "min_votes")
+        self.lookback_bars = require_int(params, "lookback_bars")
+        self.min_momentum = require_float(params, "min_momentum")
+        self.allow_short = params.get("allow_short", "false").lower() in {"1", "true", "yes", "y"}
         self.confidence = require_float(params, "confidence")
         self.horizon = require_str(params, "horizon")
         self.volatility_regime = require_str(params, "volatility_regime")
-        self._state: dict[str, DonchianState] = {}
+        if self.lookback_bars <= 0:
+            raise ValueError("lookback_bars must be > 0")
+        if self.min_momentum < 0:
+            raise ValueError("min_momentum must be >= 0")
+        self._state: dict[str, TsmomState] = {}
 
     def on_candle(self, candle: Candle) -> Iterable[Signal]:
         key = f"{candle.symbol}:{candle.timeframe}"
         state = self._state.get(key)
-        max_lookback = max(self.lookbacks)
         if state is None:
-            state = DonchianState(
-                highs=deque(maxlen=max_lookback),
-                lows=deque(maxlen=max_lookback),
-                closes=deque(maxlen=max_lookback),
+            state = TsmomState(
+                closes=deque(maxlen=self.lookback_bars + 1),
+                volumes=deque(maxlen=self.lookback_bars + 1),
             )
             self._state[key] = state
 
-        state.highs.append(candle.high)
-        state.lows.append(candle.low)
         state.closes.append(candle.close)
-        if len(state.closes) < max_lookback:
+        state.volumes.append(candle.volume)
+        if len(state.closes) < self.lookback_bars + 1:
             return []
 
-        close = candle.close
-        votes = 0
-        for window in self.lookbacks:
-            highs = list(state.highs)[-window:]
-            lows = list(state.lows)[-window:]
-            if close >= max(highs):
-                votes += 1
-            elif close <= min(lows):
-                votes -= 1
+        window_closes = list(state.closes)[-self.lookback_bars - 1 :]
+        window_volumes = list(state.volumes)[-self.lookback_bars :]
+        avg_volume = sum(window_volumes) / self.lookback_bars if window_volumes else 0.0
+        if avg_volume <= 0:
+            return []
 
-        if votes >= self.min_votes:
+        weighted_return = 0.0
+        for prev, curr, volume in zip(window_closes, window_closes[1:], window_volumes):
+            if prev == 0:
+                continue
+            weighted_return += ((curr / prev) - 1.0) * (volume / avg_volume)
+        momentum = weighted_return / self.lookback_bars
+
+        if momentum >= self.min_momentum:
             current = "long"
-        elif votes <= -self.min_votes:
+        elif momentum <= -self.min_momentum and self.allow_short:
             current = "short"
         else:
             current = "flat"
@@ -88,8 +89,10 @@ class DonchianEnsembleTrendStrategy(Strategy):
                     "timestamp": candle.timestamp,
                     "price": candle.close,
                     "timeframe": candle.timeframe,
-                    "lookbacks": self.lookbacks,
-                    "votes": votes,
+                    "lookback_bars": self.lookback_bars,
+                    "min_momentum": self.min_momentum,
+                    "momentum": momentum,
+                    "avg_volume": avg_volume,
                 },
             )
         ]

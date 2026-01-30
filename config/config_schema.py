@@ -69,6 +69,10 @@ class RiskConfig:
     stop_loss_pct: float
     take_profit_pct: float
     trailing_take_profit_pct: float
+    atr_period: int
+    atr_sl_mult: float
+    atr_tp_mult: float
+    atr_trailing_mult: float
 
 
 @dataclass(frozen=True)
@@ -91,14 +95,6 @@ class LoggingConfig:
     level: str
     json: bool
     console: bool
-
-
-@dataclass(frozen=True)
-class MlConfig:
-    enabled: bool
-    min_trades: int
-    target_win_rate: float
-    max_adjustment_pct: float
 
 
 @dataclass(frozen=True)
@@ -138,7 +134,6 @@ class AppConfig:
     strategy_params: dict[str, dict[str, str]]
     paths: PathsConfig
     logging: LoggingConfig
-    ml: MlConfig
     backtest: BacktestConfig
     forward: ForwardConfig
     live: LiveConfig
@@ -176,6 +171,10 @@ class AppConfig:
             raise ValueError("stop_loss_pct/take_profit_pct must be >= 0")
         if self.risk.trailing_take_profit_pct < 0:
             raise ValueError("trailing_take_profit_pct must be >= 0")
+        if self.risk.atr_period < 0:
+            raise ValueError("atr_period must be >= 0")
+        if self.risk.atr_sl_mult < 0 or self.risk.atr_tp_mult < 0 or self.risk.atr_trailing_mult < 0:
+            raise ValueError("atr_*_mult must be >= 0")
         if self.strategy.signal_timeout_seconds <= 0:
             raise ValueError("strategy.signal_timeout_seconds must be > 0")
         if self.backtest.days_back < 0:
@@ -198,13 +197,6 @@ class AppConfig:
             raise ValueError("exchange.ws_retry_seconds must be > 0")
         if self.exchange.ws_message_timeout_seconds <= 0:
             raise ValueError("exchange.ws_message_timeout_seconds must be > 0")
-        if self.ml.min_trades < 0:
-            raise ValueError("ml.min_trades must be >= 0")
-        if not (0 <= self.ml.target_win_rate <= 1):
-            raise ValueError("ml.target_win_rate must be between 0 and 1")
-        if self.ml.max_adjustment_pct < 0:
-            raise ValueError("ml.max_adjustment_pct must be >= 0")
-
     def with_mode(self, mode: str) -> "AppConfig":
         updated = replace(self, runtime=replace(self.runtime, mode=mode))
         updated.validate()
@@ -278,6 +270,10 @@ def parse_risk(section: dict[str, str]) -> RiskConfig:
         stop_loss_pct=float(section.get("stop_loss_pct", "0.0")),
         take_profit_pct=float(section.get("take_profit_pct", "0.0")),
         trailing_take_profit_pct=float(section.get("trailing_take_profit_pct", "0.0")),
+        atr_period=int(section.get("atr_period", "0")),
+        atr_sl_mult=float(section.get("atr_sl_mult", "0.0")),
+        atr_tp_mult=float(section.get("atr_tp_mult", "0.0")),
+        atr_trailing_mult=float(section.get("atr_trailing_mult", "0.0")),
     )
 
 
@@ -291,10 +287,10 @@ def parse_strategy(section: dict[str, str]) -> StrategyConfig:
 
 def parse_paths(section: dict[str, str]) -> PathsConfig:
     return PathsConfig(
-        data_dir=Path(section.get("data_dir", "Data")),
-        state_dir=Path(section.get("state_dir", "State")),
-        state_db=Path(section.get("state_db", "State/trading.db")),
-        logs_dir=Path(section.get("logs_dir", "Logs")),
+        data_dir=Path(section.get("data_dir", "runtime/data")),
+        state_dir=Path(section.get("state_dir", "runtime/state")),
+        state_db=Path(section.get("state_db", "runtime/state/trading.db")),
+        logs_dir=Path(section.get("logs_dir", "runtime/logs")),
     )
 
 
@@ -303,15 +299,6 @@ def parse_logging(section: dict[str, str]) -> LoggingConfig:
         level=section.get("level", "INFO").upper(),
         json=_as_bool(section.get("json", "true")),
         console=_as_bool(section.get("console", "true")),
-    )
-
-
-def parse_ml(section: dict[str, str]) -> MlConfig:
-    return MlConfig(
-        enabled=_as_bool(section.get("enabled", "true")),
-        min_trades=int(section.get("min_trades", "50")),
-        target_win_rate=float(section.get("target_win_rate", "0.52")),
-        max_adjustment_pct=float(section.get("max_adjustment_pct", "0.2")),
     )
 
 
