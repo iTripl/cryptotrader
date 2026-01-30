@@ -42,9 +42,12 @@ def strategy_worker(
     input_queue: mp.Queue[Candle],
     output_queue: mp.Queue[Signal],
 ) -> None:
-    while True:
-        candle = input_queue.get()
-        if candle is None:
-            break
-        for signal in strategy.on_candle(candle):
-            output_queue.put(signal)
+    try:
+        while True:
+            candle = input_queue.get()
+            if candle is None:
+                break
+            for signal in strategy.on_candle(candle):
+                output_queue.put(signal)
+    except KeyboardInterrupt:
+        return

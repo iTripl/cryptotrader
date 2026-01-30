@@ -44,7 +44,9 @@ class RestClient:
                 if not self.circuit.allow():
                     raise RuntimeError("Circuit breaker open")
                 return self._request(payload)
-            except Exception:
+            except Exception as exc:
+                if isinstance(exc, (ValueError, TypeError, KeyError)):
+                    raise
                 attempt += 1
                 if attempt >= self.retry_policy.max_attempts:
                     self.circuit.record_failure()
@@ -62,6 +64,9 @@ class RestClient:
     def place_order(self, order: Any) -> Any:
         raise NotImplementedError
 
+    def cancel_order(self, order_id: str, symbol: str) -> Any:
+        raise NotImplementedError
+
 
 class WsClient:
     def connect(self) -> None:
@@ -70,7 +75,7 @@ class WsClient:
     def subscribe(self, channel: str) -> None:
         raise NotImplementedError
 
-    def stream_ohlcv(self, symbols: list[str], timeframes: list[str]) -> Iterable[Candle]:
+    def stream_ohlcv(self, symbols: list[str], timeframes: list[str]) -> Iterable[Candle | None]:
         raise NotImplementedError
 
 

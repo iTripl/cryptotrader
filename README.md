@@ -6,6 +6,7 @@ clean separation between strategy, risk, execution, and data layers.
 ## Quick start (debug/dev)
 - Edit `config/config.ini`
 - Create venv: `bash scripts/setup_venv.sh`
+- Copy secrets template: `cp .env.example .env`
 - Run: `python main.py --config config/config.ini --interactive`
 - Debug with synthetic stream: `python main.py --config config/config.ini --dry-run`
 - Run tests: `pytest`
@@ -13,8 +14,8 @@ clean separation between strategy, risk, execution, and data layers.
 
 ## Modes
 - `backtest`  : uses historical Parquet data and simulated execution
-- `forward`   : uses live data, paper execution
-- `live`      : uses live data + exchange execution
+- `forward`   : uses live data + demo execution when `paper_trading=true`
+- `live`      : uses live data + exchange execution (demo when `paper_trading=true`)
 
 Backtest auto-downloads missing data for the configured symbols/timeframes.
 Backtest summaries (stats + final equity) are stored in `State/trading.db`.
@@ -52,8 +53,10 @@ Latest recommendations are also written to `State/ml_recommendations.json`.
 - This is infrastructure scaffolding; production strategies and live WS connectors for Binance/OKX are not included yet.
 - Configuration is required for all runtime parameters; nothing is hardcoded.
 - Use the console menu to select strategies by number.
+- Secrets are loaded from `.env` (see `[secrets]` in `config.ini`) and must never be committed.
 
 ## Deployment
 - Guide: `docs/deployment.md`
 - Debugging: `docs/debugging.md`
 - Research notes: `docs/research.md`
+- Demo trading: `docs/demo_trading.md`

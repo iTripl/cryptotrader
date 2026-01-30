@@ -19,7 +19,7 @@ from config.config_schema import (
     parse_strategy,
     parse_symbols,
 )
-from config.secrets import resolve_mapping
+from config.secrets import load_env_file, resolve_mapping
 
 
 def load_config(path: Path) -> AppConfig:
@@ -28,6 +28,12 @@ def load_config(path: Path) -> AppConfig:
 
     parser = configparser.ConfigParser()
     parser.read(path)
+
+    if "secrets" in parser and "env_file" in parser["secrets"]:
+        env_path = Path(parser["secrets"]["env_file"]).expanduser()
+        if not env_path.is_absolute():
+            env_path = (path.parent / env_path).resolve()
+        load_env_file(env_path)
 
     required = [
         "runtime",

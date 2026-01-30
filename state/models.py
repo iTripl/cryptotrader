@@ -12,6 +12,7 @@ class OrderState(str, Enum):
     FILLED = "filled"
     CLOSED = "closed"
     CANCELED = "canceled"
+    REJECTED = "rejected"
 
 
 def order_state_from_status(status: str) -> OrderState:
@@ -25,6 +26,9 @@ def order_state_from_status(status: str) -> OrderState:
         "closed": OrderState.CLOSED,
         "canceled": OrderState.CANCELED,
         "cancelled": OrderState.CANCELED,
+        "rejected": OrderState.REJECTED,
+        "error": OrderState.REJECTED,
+        "failed": OrderState.REJECTED,
     }
     return mapping.get(status_lower, OrderState.SUBMITTED)
 
@@ -44,9 +48,12 @@ class Order:
 class Fill:
     fill_id: str
     order_id: str
+    symbol: str
+    side: str
     price: float
     quantity: float
     fee: float
+    timestamp: int
 
 
 @dataclass(frozen=True)
@@ -61,6 +68,19 @@ class Trade:
     fees: float
     slippage_bps: float
     strategy: str | None = None
+
+
+@dataclass(frozen=True)
+class TradeMetrics:
+    trade_id: str
+    symbol: str
+    strategy: str | None
+    notional: float
+    gross_pnl: float
+    net_pnl: float
+    return_pct: float
+    fee_pct: float
+    slippage_bps: float
 
 
 @dataclass
@@ -82,6 +102,9 @@ class PortfolioState:
     gross_exposure: float = 0.0
     correlation: float = 0.0
     expectancy: float = 0.0
+    daily_start_equity: float = 0.0
+    daily_peak_equity: float = 0.0
+    daily_day: int = 0
     trace_id: str = field(default_factory=lambda: str(uuid4()))
 
 
@@ -98,6 +121,25 @@ class BacktestSummary:
     total_trades: int
     final_equity: float
     stats_json: str
+
+
+@dataclass(frozen=True)
+class BacktestMetrics:
+    run_id: str
+    total_trades: int
+    win_rate: float
+    avg_win: float
+    avg_loss: float
+    profit_factor: float
+    payoff_ratio: float
+    expectancy: float
+    max_drawdown: float
+    pnl_value: float
+    pnl_pct: float
+    cagr: float
+    calmar_ratio: float
+    sharpe: float
+    sortino: float
 
 
 @dataclass(frozen=True)

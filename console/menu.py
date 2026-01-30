@@ -32,7 +32,9 @@ class ConsoleMenu:
             strategy_modules=strategies,
             risk_profile=risk_profile,
         )
-        return replace(self.config, runtime=runtime, symbols=updated_symbols)
+        updated = replace(self.config, runtime=runtime, symbols=updated_symbols)
+        updated.validate()
+        return updated
 
     @staticmethod
     def _prompt(label: str, default: str) -> str:

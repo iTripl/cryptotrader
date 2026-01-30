@@ -11,12 +11,18 @@ class OrderStateMachine:
 
     def transition(self, new_state: OrderState) -> Order:
         valid = {
-            OrderState.CREATED: {OrderState.SUBMITTED, OrderState.CANCELED},
-            OrderState.SUBMITTED: {OrderState.PARTIALLY_FILLED, OrderState.FILLED, OrderState.CANCELED},
-            OrderState.PARTIALLY_FILLED: {OrderState.FILLED, OrderState.CANCELED},
+            OrderState.CREATED: {OrderState.SUBMITTED, OrderState.CANCELED, OrderState.REJECTED},
+            OrderState.SUBMITTED: {
+                OrderState.PARTIALLY_FILLED,
+                OrderState.FILLED,
+                OrderState.CANCELED,
+                OrderState.REJECTED,
+            },
+            OrderState.PARTIALLY_FILLED: {OrderState.FILLED, OrderState.CANCELED, OrderState.REJECTED},
             OrderState.FILLED: {OrderState.CLOSED},
             OrderState.CLOSED: set(),
             OrderState.CANCELED: set(),
+            OrderState.REJECTED: set(),
         }
         if new_state not in valid[self.order.status]:
             raise ValueError(f"Invalid state transition {self.order.status} -> {new_state}")

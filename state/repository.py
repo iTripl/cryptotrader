@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from state.models import BacktestSummary, Fill, MlRecommendation, Order, Trade
+from state.models import BacktestMetrics, BacktestSummary, Fill, MlRecommendation, Order, Trade, TradeMetrics
 
 
 class StateRepository:
@@ -15,10 +15,16 @@ class StateRepository:
     def save_fill(self, fill: Fill) -> None:
         raise NotImplementedError
 
+    def save_trade_metrics(self, metrics: TradeMetrics) -> None:
+        raise NotImplementedError
+
     def close(self) -> None:
         raise NotImplementedError
 
     def save_backtest_summary(self, summary: BacktestSummary) -> None:
+        raise NotImplementedError
+
+    def save_backtest_metrics(self, metrics: BacktestMetrics) -> None:
         raise NotImplementedError
 
     def save_ml_recommendation(self, recommendation: MlRecommendation) -> None:
@@ -31,6 +37,8 @@ class InMemoryStateRepository(StateRepository):
     trades: list[Trade] = field(default_factory=list)
     fills: list[Fill] = field(default_factory=list)
     backtest_summaries: list[BacktestSummary] = field(default_factory=list)
+    trade_metrics: list[TradeMetrics] = field(default_factory=list)
+    backtest_metrics: list[BacktestMetrics] = field(default_factory=list)
     ml_recommendations: list[MlRecommendation] = field(default_factory=list)
 
     def save_order(self, order: Order) -> None:
@@ -42,11 +50,17 @@ class InMemoryStateRepository(StateRepository):
     def save_fill(self, fill: Fill) -> None:
         self.fills.append(fill)
 
+    def save_trade_metrics(self, metrics: TradeMetrics) -> None:
+        self.trade_metrics.append(metrics)
+
     def close(self) -> None:
         return None
 
     def save_backtest_summary(self, summary: BacktestSummary) -> None:
         self.backtest_summaries.append(summary)
+
+    def save_backtest_metrics(self, metrics: BacktestMetrics) -> None:
+        self.backtest_metrics.append(metrics)
 
     def save_ml_recommendation(self, recommendation: MlRecommendation) -> None:
         self.ml_recommendations.append(recommendation)

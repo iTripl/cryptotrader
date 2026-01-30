@@ -12,6 +12,7 @@ from exchanges.bybit.adapter import BybitAdapter, BybitRestClient, BybitWsClient
 from exchanges.okx.adapter import OkxAdapter, OkxRestClient, OkxWsClient
 from execution.execution_engine import BacktestExecutionEngine, LiveExecutionEngine, PaperExecutionEngine
 from execution.order_manager import OrderManager
+from execution.order_tracker import BybitOrderTracker, OrderTracker
 from features.feature_pipeline import FeaturePipeline
 from risk.risk_manager import DefaultRiskManager
 from state.repository import InMemoryStateRepository
@@ -32,14 +33,28 @@ class Container:
         checkpoint_dir = Path(self.config.paths.state_dir) / "checkpoints"
 
         if self.config.runtime.exchange == "bybit":
+            rest_url = self.config.exchange.demo_rest_url if self.config.exchange.use_demo else self.config.exchange.rest_url
+            ws_url = self.config.exchange.public_ws_url or self.config.exchange.ws_url
             rest = BybitRestClient(
                 rate_limiter,
                 retry_policy,
-                base_url=self.config.exchange.rest_url,
+                base_url=rest_url,
+                market_base_url=self.config.exchange.market_rest_url or self.config.exchange.rest_url,
                 timeout=self.config.exchange.timeout_seconds,
                 category=self.config.exchange.category,
+                api_key=self.config.exchange.api_key,
+                api_secret=self.config.exchange.api_secret,
+                recv_window=self.config.exchange.recv_window,
             )
-            ws = BybitWsClient(self.config.exchange.ws_url, self.config.runtime.exchange)
+            rest.start_time_sync()
+            ws = BybitWsClient(
+                ws_url,
+                self.config.runtime.exchange,
+                open_timeout=self.config.exchange.ws_open_timeout_seconds,
+                ping_interval=self.config.exchange.ws_ping_interval_seconds,
+                retry_seconds=self.config.exchange.ws_retry_seconds,
+                message_timeout=self.config.exchange.ws_message_timeout_seconds,
+            )
             return BybitAdapter(rest, ws, checkpoint_dir)
         if self.config.runtime.exchange == "binance":
             rest = BinanceRestClient(
@@ -66,7 +81,7 @@ class Container:
         strategies = load_strategies(self.config.runtime.strategy_modules, self.config)
         from strategies.manager import StrategyManager
 
-        return StrategyManager(strategies)
+        return StrategyManager(strategies, timeout_seconds=self.config.strategy.signal_timeout_seconds)
 
     def risk_manager(self):
         return DefaultRiskManager(self.config.risk)
@@ -81,10 +96,10 @@ class Container:
                 fee_bps=self.config.backtest.fee_bps,
                 slippage_bps=self.config.backtest.slippage_bps,
             )
-        if self.config.runtime.mode == "forward":
-            return PaperExecutionEngine(self.order_manager())
-        if self.config.runtime.mode == "live" and self.config.live.paper_trading:
-            return PaperExecutionEngine(self.order_manager())
+        if self.config.paper_trading_enabled():
+            if not self.config.exchange.use_demo:
+                raise ValueError("paper_trading requires exchange.use_demo=true for demo trading")
+            return LiveExecutionEngine(self.exchange_adapter(), self.order_manager())
         return LiveExecutionEngine(self.exchange_adapter(), self.order_manager())
 
     def feature_pipeline(self):
@@ -105,4 +120,21 @@ class Container:
 
     def data_auto_loader(self):
         return DataAutoLoader(self.config, self.exchange_adapter(), self.parquet_writer())
+
+    def order_tracker(self) -> OrderTracker | None:
+        if self.config.runtime.exchange != "bybit":
+            return None
+        if not self.config.exchange.api_key or not self.config.exchange.api_secret:
+            return None
+        return BybitOrderTracker(
+            self.exchange_adapter().rest,
+            private_ws_url=self.config.exchange.private_ws_url,
+            api_key=self.config.exchange.api_key,
+            api_secret=self.config.exchange.api_secret,
+            recv_window=self.config.exchange.recv_window,
+            poll_interval_seconds=self.config.exchange.order_poll_interval_seconds,
+            open_timeout=self.config.exchange.ws_open_timeout_seconds,
+            ping_interval=self.config.exchange.ws_ping_interval_seconds,
+            retry_seconds=self.config.exchange.ws_retry_seconds,
+        )
 

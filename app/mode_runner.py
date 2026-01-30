@@ -5,6 +5,7 @@ from typing import Iterable
 
 from config.config_schema import AppConfig
 from data.schemas import Candle
+from data.normalization import normalize_ohlcv
 from exchanges.base_exchange import ExchangeAdapter
 from data.simulated import SyntheticDataSource
 from data.auto_loader import DataAutoLoader
@@ -28,6 +29,8 @@ class ModeRunner:
         self.reader = reader
         self.auto_loader = auto_loader
         self.exchange_adapter = exchange_adapter
+        self._last_polled_ts: dict[tuple[str, str], int] = {}
+        self._last_stream_ts: dict[tuple[str, str], int] = {}
 
     def stream(self) -> Iterable[Candle]:
         if self.config.runtime.mode == "backtest":
@@ -86,10 +89,33 @@ class ModeRunner:
         if not self.exchange_adapter:
             raise RuntimeError("Exchange adapter required for live stream")
         logger.info("starting live stream via exchange WS")
-        return self.exchange_adapter.stream_ohlcv(
+        stream = self.exchange_adapter.stream_ohlcv(
             list(self.config.symbols.symbols),
             list(self.config.symbols.timeframes),
         )
+        logger.debug(
+            "live stream subscribed symbols=%s timeframes=%s",
+            self.config.symbols.symbols,
+            self.config.symbols.timeframes,
+        )
+        for candle in stream:
+            if candle is None:
+                logger.debug("live stream heartbeat missed; polling REST for latest candles")
+                for symbol in self.config.symbols.symbols:
+                    for timeframe in self.config.symbols.timeframes:
+                        polled = self._poll_latest_candle(symbol, timeframe)
+                        if polled and self._dedupe_candle(polled):
+                            yield polled
+                continue
+            logger.debug(
+                "live candle %s %s ts=%s close=%s",
+                candle.symbol,
+                candle.timeframe,
+                candle.timestamp,
+                candle.close,
+            )
+            if self._dedupe_candle(candle):
+                yield candle
 
     def _synthetic_stream(self) -> Iterable[Candle]:
         streams = []
@@ -132,3 +158,58 @@ class ModeRunner:
             series.sort(key=lambda c: c.timestamp)
             capped.extend(series[-max_per_series:])
         return capped
+
+    def _poll_latest_candle(self, symbol: str, timeframe: str) -> Candle | None:
+        if not self.exchange_adapter:
+            return None
+        end_ts = utc_now_ts()
+        try:
+            step = timeframe_to_seconds(timeframe)
+        except ValueError:
+            return None
+        start_ts = end_ts - step * 2
+        try:
+            rows = self.exchange_adapter.rest.get_ohlcv(symbol, timeframe, start_ts, end_ts, 2)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("REST poll failed for %s %s: %s", symbol, timeframe, exc)
+            return None
+        if isinstance(rows, tuple):
+            rows = rows[0]
+        if not rows:
+            return None
+        last = rows[-1]
+        key = (symbol, timeframe)
+        last_seen = self._last_polled_ts.get(key, 0)
+        if last["timestamp"] <= last_seen:
+            logger.debug(
+                "rest candle skipped %s %s ts=%s last_seen=%s",
+                symbol,
+                timeframe,
+                last.get("timestamp"),
+                last_seen,
+            )
+            return None
+        self._last_polled_ts[key] = last["timestamp"]
+        logger.debug(
+            "rest candle %s %s ts=%s close=%s",
+            symbol,
+            timeframe,
+            last.get("timestamp"),
+            last.get("close"),
+        )
+        return normalize_ohlcv([last], symbol, timeframe, self.exchange_adapter.name)[0]
+
+    def _dedupe_candle(self, candle: Candle) -> bool:
+        key = (candle.symbol, candle.timeframe)
+        last_seen = self._last_stream_ts.get(key, 0)
+        if candle.timestamp <= last_seen:
+            logger.debug(
+                "duplicate candle skipped %s %s ts=%s last_seen=%s",
+                candle.symbol,
+                candle.timeframe,
+                candle.timestamp,
+                last_seen,
+            )
+            return False
+        self._last_stream_ts[key] = candle.timestamp
+        return True

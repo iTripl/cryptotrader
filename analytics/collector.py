@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from math import sqrt
 
-from state.models import Trade
+from state.models import BacktestMetrics, Trade
 
 
 @dataclass(frozen=True)
@@ -101,6 +101,89 @@ class StatisticsCollector:
             max_drawdown=max_dd,
             pnl_value=pnl_value,
             pnl_pct=pnl_pct,
+        )
+
+    def backtest_metrics(
+        self,
+        run_id: str,
+        initial_equity: float,
+        final_equity: float,
+        simulated_days: int,
+    ) -> BacktestMetrics:
+        total = len(self._trades)
+        if total == 0:
+            return BacktestMetrics(
+                run_id=run_id,
+                total_trades=0,
+                win_rate=0.0,
+                avg_win=0.0,
+                avg_loss=0.0,
+                profit_factor=0.0,
+                payoff_ratio=0.0,
+                expectancy=0.0,
+                max_drawdown=0.0,
+                pnl_value=0.0,
+                pnl_pct=0.0,
+                cagr=0.0,
+                calmar_ratio=0.0,
+                sharpe=0.0,
+                sortino=0.0,
+            )
+
+        pnls = [t.pnl for t in self._trades]
+        wins = [p for p in pnls if p > 0]
+        losses = [p for p in pnls if p < 0]
+        win_rate = len(wins) / total if total else 0.0
+        gross_profit = sum(wins)
+        gross_loss = abs(sum(losses))
+        avg_win = gross_profit / len(wins) if wins else 0.0
+        avg_loss = abs(sum(losses) / len(losses)) if losses else 0.0
+        profit_factor = gross_profit / gross_loss if gross_loss > 0 else (float("inf") if gross_profit > 0 else 0.0)
+        payoff_ratio = avg_win / avg_loss if avg_loss > 0 else 0.0
+        expectancy = (win_rate * avg_win) - ((1 - win_rate) * avg_loss)
+
+        max_dd = self._max_drawdown(initial_equity)
+        pnl_value = final_equity - initial_equity
+        pnl_pct = (pnl_value / initial_equity) if initial_equity else 0.0
+
+        if simulated_days > 0 and initial_equity > 0 and final_equity > 0:
+            cagr = (final_equity / initial_equity) ** (365.0 / simulated_days) - 1.0
+        else:
+            cagr = 0.0
+        calmar_ratio = cagr / max_dd if max_dd > 0 else 0.0
+
+        returns = []
+        for trade in self._trades:
+            notional = trade.entry_price * trade.quantity
+            if notional > 0:
+                returns.append(trade.pnl / notional)
+        mean_ret = sum(returns) / len(returns) if returns else 0.0
+        variance = sum((r - mean_ret) ** 2 for r in returns) / max(len(returns), 1) if returns else 0.0
+        std = sqrt(variance) if variance > 0 else 0.0
+        sharpe = mean_ret / std if std else 0.0
+        downside = [r for r in returns if r < 0]
+        downside_var = (
+            sum((r - mean_ret) ** 2 for r in downside) / max(len(downside), 1) if downside else 0.0
+        )
+        downside_std = sqrt(downside_var) if downside_var > 0 else 0.0
+        sortino = mean_ret / downside_std if downside_std else 0.0
+
+        return BacktestMetrics(
+            run_id=run_id,
+            total_trades=total,
+            win_rate=win_rate,
+            avg_win=avg_win,
+            avg_loss=avg_loss,
+            profit_factor=profit_factor,
+            payoff_ratio=payoff_ratio,
+            expectancy=expectancy,
+            max_drawdown=max_dd,
+            pnl_value=pnl_value,
+            pnl_pct=pnl_pct,
+            cagr=cagr,
+            calmar_ratio=calmar_ratio,
+            sharpe=sharpe,
+            sortino=sortino,
         )
 
     def _max_drawdown(self, initial_equity: float) -> float:

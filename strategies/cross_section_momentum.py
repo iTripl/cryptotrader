@@ -29,8 +29,8 @@ class CrossSectionMomentumStrategy(Strategy):
         self.horizon = require_str(params, "horizon")
         self.volatility_regime = require_str(params, "volatility_regime")
         self._state: dict[str, MomentumState] = {}
-        self._bar_counter = 0
-        self._last_selected: set[str] = set()
+        self._bar_counter: dict[str, int] = {}
+        self._last_selected: dict[str, set[str]] = {}
 
     def on_candle(self, candle: Candle) -> Iterable[Signal]:
         key = f"{candle.symbol}:{candle.timeframe}"
@@ -40,25 +40,32 @@ class CrossSectionMomentumStrategy(Strategy):
             self._state[key] = state
 
         state.series.append(candle.close)
-        self._bar_counter += 1
+        timeframe = candle.timeframe
+        self._bar_counter[timeframe] = self._bar_counter.get(timeframe, 0) + 1
 
-        if not self._ready():
+        states = self._states_for_timeframe(timeframe)
+        if not states:
+            return []
+        expected_symbols = set(self.config.symbols.symbols)
+        if expected_symbols and set(states.keys()) != expected_symbols:
+            return []
+        if not self._ready(states):
             return []
 
-        if self._bar_counter % self.hold_bars != 0:
+        if self._bar_counter[timeframe] % self.hold_bars != 0:
             return []
 
-        momentums = self._compute_momentum()
+        momentums = self._compute_momentum(states)
         if not momentums:
             return []
 
-        ranked = sorted(momentums.items(), key=lambda item: item[1], reverse=True)
+        ranked = sorted(momentums.items(), key=lambda item: item[1][0], reverse=True)
         winners = {symbol for symbol, _ in ranked[: self.top_n]}
         losers = {symbol for symbol, _ in ranked[-self.top_n :]} if self.allow_short else set()
 
         signals: list[Signal] = []
-        exit_symbols = self._last_selected - winners - losers
-        for symbol, momentum in ranked:
+        exit_symbols = self._last_selected.get(timeframe, set()) - winners - losers
+        for symbol, (momentum, last_price) in ranked:
             if symbol in winners:
                 direction = "LONG"
             elif symbol in losers:
@@ -77,25 +84,32 @@ class CrossSectionMomentumStrategy(Strategy):
                     metadata={
                         "strategy": self.name,
                         "timestamp": candle.timestamp,
-                        "price": candle.close,
+                        "price": last_price,
                         "momentum": momentum,
                         "winners": list(winners),
                     },
                 )
             )
-        self._last_selected = winners | losers
+        self._last_selected[timeframe] = winners | losers
         return signals
 
-    def _ready(self) -> bool:
-        for state in self._state.values():
+    def _states_for_timeframe(self, timeframe: str) -> dict[str, MomentumState]:
+        states: dict[str, MomentumState] = {}
+        for key, state in self._state.items():
+            symbol, state_tf = key.split(":")
+            if state_tf == timeframe:
+                states[symbol] = state
+        return states
+
+    def _ready(self, states: dict[str, MomentumState]) -> bool:
+        for state in states.values():
             if len(state.series) < self.lookback_bars + 1:
                 return False
         return True
 
-    def _compute_momentum(self) -> dict[str, float]:
-        momentums: dict[str, float] = {}
-        for key, state in self._state.items():
-            symbol = key.split(":")[0]
+    def _compute_momentum(self, states: dict[str, MomentumState]) -> dict[str, tuple[float, float]]:
+        momentums: dict[str, tuple[float, float]] = {}
+        for symbol, state in states.items():
             values = list(state.series)
             if len(values) < self.lookback_bars + 1:
                 continue
@@ -103,5 +117,5 @@ class CrossSectionMomentumStrategy(Strategy):
             end = values[-1]
             if start == 0:
                 continue
-            momentums[symbol] = (end / start) - 1.0
+            momentums[symbol] = ((end / start) - 1.0, end)
         return momentums

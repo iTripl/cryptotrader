@@ -12,7 +12,8 @@ bash scripts/setup_venv.sh
 
 ## Configure
 1. Edit `config/config.ini`
-2. Export API keys:
+2. Copy `.env.example` to `.env` and fill credentials
+3. Export API keys (optional override):
 ```bash
 export BYBIT_API_KEY="..."
 export BYBIT_API_SECRET="..."

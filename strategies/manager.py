@@ -15,10 +15,11 @@ logger = get_logger("strategies.manager")
 
 
 class StrategyManager:
-    def __init__(self, strategies: Iterable[Strategy]) -> None:
+    def __init__(self, strategies: Iterable[Strategy], timeout_seconds: float = 0.25) -> None:
         self._strategies = list(strategies)
         self._strategy_by_name = {strategy.name: strategy for strategy in self._strategies}
         self._processes: list[StrategyProcess] = []
+        self._timeout_seconds = timeout_seconds
 
     def start(self) -> None:
         for strategy in self._strategies:
@@ -52,6 +53,12 @@ class StrategyManager:
         self._processes.clear()
 
     def broadcast_candle(self, candle: Candle) -> None:
+        logger.debug(
+            "broadcast candle %s %s ts=%s",
+            candle.symbol,
+            candle.timeframe,
+            candle.timestamp,
+        )
         for proc in self._processes:
             proc.input_queue.put(candle)
 
@@ -69,6 +76,13 @@ class StrategyManager:
         signals: list[Signal] = []
         for strategy in self._strategies:
             batch = list(strategy.on_candle(candle))
+            logger.debug(
+                "strategy %s processed candle %s %s signals=%d",
+                strategy.name,
+                candle.symbol,
+                candle.timeframe,
+                len(batch),
+            )
             if batch:
                 logger.info("strategy %s produced %d signals", strategy.name, len(batch))
             signals.extend(batch)
@@ -92,7 +106,8 @@ class StrategyManager:
             if strategy:
                 self._processes.append(self._spawn(strategy))
 
-    def on_candle(self, candle: Candle, timeout_seconds: float = 0.05) -> list[Signal]:
+    def on_candle(self, candle: Candle, timeout_seconds: float | None = None) -> list[Signal]:
+        timeout_seconds = self._timeout_seconds if timeout_seconds is None else timeout_seconds
         self.broadcast_candle(candle)
         signals: list[Signal] = []
         deadline = time.time() + timeout_seconds
@@ -102,6 +117,12 @@ class StrategyManager:
                 signals.extend(batch)
             else:
                 time.sleep(0.001)
+        logger.debug(
+            "signals collected for candle %s %s count=%d",
+            candle.symbol,
+            candle.timeframe,
+            len(signals),
+        )
         if signals:
             logger.info("strategies produced %d signals", len(signals))
         return signals

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 from app.bootstrap import Bootstrap
@@ -32,6 +33,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Run pipeline without execution",
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug logging",
+    )
     return parser.parse_args()
 
 
@@ -44,6 +50,8 @@ def main() -> int:
         config = config.with_mode(args.mode)
     if args.dry_run:
         config = config.with_dry_run(True)
+    if args.debug:
+        config = replace(config, logging=replace(config.logging, level="DEBUG"))
 
     if args.interactive:
         config = ConsoleMenu(config).run()

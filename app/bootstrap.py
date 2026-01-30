@@ -36,4 +36,5 @@ class Bootstrap:
             state_repo=container.state_repository(),
             stats=StatisticsCollector(),
             killswitch=KillSwitch(),
+            order_tracker=container.order_tracker(),
         )
